@@ -4,7 +4,6 @@ import giop
 import PyTango
 import asyncio
 import argparse
-import netifaces
 from functools import partial
 from contextlib import closing
 
@@ -14,6 +13,7 @@ def forward_pipe(reader, writer):
     with closing(writer):
         while not reader.at_eof():
             data = yield from reader.read(4096)
+            print('whoo!')
             writer.write(data)
 
 
@@ -46,11 +46,11 @@ def read_frame(reader):
     # Read data
     raw_data = yield from reader.read(header.size)
     raw_frame = raw_header + raw_data
-    if message_type != giop.MessageType.Reply:
+    if header.message_type != giop.MessageType.Reply:
         return raw_frame
     # Unpack reply
     raw_reply_header, raw_body = raw_data[:12], raw_data[12:]
-    repy_header = giop.unpack_reply_header(raw_reply_header)
+    reply_header = giop.unpack_reply_header(raw_reply_header)
     if reply_header.reply_status != giop.ReplyStatus.NoException:
         return raw_frame
     # Find IOR, host and port
@@ -59,34 +59,36 @@ def read_frame(reader):
         return raw_frame
     ior, start, stop = ior
     host = ior.host[:-1].decode()
-    key = host, ior.port
+    bind_address = reader._transport._sock.getsockname()[0]
+    key = host, ior.port, bind_address
     # Start port forwarding
     if key not in loop.forward_dict:
         handler = partial(forward, host=host, port=ior.port)
+
         server = yield from asyncio.start_server(
-            handler, loop.bind_address, 0, loop=loop)
+            handler, bind_address, 0, loop=loop)
         value = (
-            server
-            server.sockets[0].getsockname()[1],
-            server.sockets[0].getsockname()[0].encode() + b'\x00')
+            server,
+            server.sockets[0].getsockname()[0],
+            server.sockets[0].getsockname()[1],)
         loop.forward_dict[key] = value
-        print("Forwarding {} to {}...".format(value, key))
+        msg = "Forwarding {0[0]} port {0[1]} to {1[0]} port {1[1]}..."
+        print(msg.format(value[1:], key))
     # Patch IOR
     server, host, port = loop.forward_dict[key]
-    ior = ior._replace(host=host, port=port)
+    ior = ior._replace(host=host.encode() + b'\x00', port=port)
     # Repack body
     raw_body = giop.repack_ior(raw_body, ior, start, stop)
     raw_data = raw_reply_header + raw_body
-    header = header._replace(size=len(raw_data))
-    return giop.pack_giop(header, raw_body)
+    return giop.pack_giop(header, raw_data)
 
 
 @asyncio.coroutine
 def inspect(client_reader, client_writer):
     """Inspect the traffic between """
-    loop = server_reader._loop
+    loop = client_reader._loop
     db_reader, db_writer = yield from asyncio.open_connection(
-        loop.tango_host.split(":"), loop=loop)
+        *loop.tango_host, loop=loop)
     task1 = inspect_pipe(client_reader, db_writer)
     task2 = inspect_pipe(db_reader, client_writer)
     yield from asyncio.gather(task1, task2)
@@ -104,7 +106,9 @@ def run_server(bind_address, server_port, tango_host):
     coro = asyncio.start_server(inspect, bind_address, server_port)
     server = loop.run_until_complete(coro)
     # Serve requests until Ctrl+C is pressed
-    print('Serving on {}'.format(server.sockets[0].getsockname()))
+    msg = ('Serving a Tango gateway to {0[0]} port {0[1]} '
+           'on {1[0]} port {1[1]} ...')
+    print(msg.format(loop.tango_host, server.sockets[0].getsockname()))
     try:
         loop.run_forever()
     except KeyboardInterrupt:
@@ -117,6 +121,12 @@ def run_server(bind_address, server_port, tango_host):
     # Wait for the servers to close
     wait_servers = asyncio.wait([server.wait_closed() for server in servers])
     loop.run_until_complete(wait_servers)
+    # Cancel all the tasks
+    tasks = asyncio.Task.all_tasks()
+    for task in tasks:
+        task.cancel()
+    # Wait for all the tasks to finish
+    loop.run_until_complete(asyncio.wait(tasks))
     loop.close()
 
 
@@ -124,38 +134,21 @@ def main(*args):
     """Run a Tango gateway server from CLI arguments."""
     # Create parser
     parser = argparse.ArgumentParser(description='Run a Tango gateway server.')
-    parser.add_argument('--bind', '-b' metavar='ADDRESS',
-                        help='Specify the bind address (default is '
-                        'netifaces.gateways()["default"][AF_INET][0]')
+    parser.add_argument('--bind', '-b', metavar='ADDRESS', default='',
+                        help='Specify the bind address '
+                        '(default is all interfaces)')
     parser.add_argument('--port', '-p', metavar='PORT', default=8000,
                         help='Port for the server (default is 8000)')
-    parser.add_argument('--interface', '-i', metavar='INTERFACE',
-                        help='Specify an interface to get the bind address')
     parser.add_argument('--tango', '-t', metavar='HOST',
                         help='Tango host (default is $TANGO_HOST)')
     # Parse arguments
-    namespace = parser.parse(*args)
-    # Check arguments compatibility
-    if namespace.interface and namespace.bind:
-        parser.error('Both --bind and --interface options have been supplied')
-    # Get default bind address
-    if not namespace.bind:
-        namespace.bind = netifaces.gateways()["default"][netifaces.AF_INET][0]
-    # Get bind address from interface
-    if namespace.interface:
-        if ':' in namespace.interface:
-            interface, index = namespace.interface.split(':')
-            index = int(index)
-        else:
-            interface, index = namespace.interface, 0
-        lst = netifaces.ifaddresses(interface)[netifaces.AF_INET]
-        namespace.bind = lst[index]['addr']
+    namespace = parser.parse_args(*args)
     # Check Tango database
     if namespace.tango:
         db = PyTango.Database(namespace.tango)
     else:
         db = PyTango.Database()
-    namespace.tango = db.get_db_host(), db.get_db_port()
+    namespace.tango = db.get_db_host(), int(db.get_db_port())
     # Run the server
     return run_server(namespace.bind, namespace.port, namespace.tango)
 

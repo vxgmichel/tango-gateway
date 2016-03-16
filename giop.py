@@ -12,9 +12,9 @@ LITTLE_ENDIAN = 1
 GIOP_HEADER_STRUCT = '4sBBBBI'
 REPLY_HEADER_STRUCT = 'III'
 IOR_STRUCT_1 = 'II'
-IOR_STRUCT_2 = IOR_STRUCT_1 + '{:d}sIIIBBI'
+IOR_STRUCT_2 = IOR_STRUCT_1 + '{:d}sIIIBBHI'
 IOR_STRUCT_3 = IOR_STRUCT_2 + '{:d}sH0I'
-IOR_LENGTH_STRUCT = 'BBI{}sH0I'
+IOR_LENGTH_STRUCT = 'BBHI{}sH0I'
 MIN_IOR_LENGTH = 76
 HEXA_DIGIT_SET = set(b'0123456789abcdef')
 
@@ -52,13 +52,13 @@ ReplyHeader = namedtuple(
 IOR = namedtuple(
     'IOR',
     'first dtype_length dtype nb_profile tag '
-    'length major minor host_length host port body')
+    'length major minor wtf host_length host port body')
 
 
 # ASCII/bytes helpers
 
 def ascii_to_bytes(s):
-    return bytearray(int(s[i:i+2], 16) for i in range(0, len(s), 2))
+    return bytes(int(s[i:i+2], 16) for i in range(0, len(s), 2))
 
 
 def bytes_to_ascii(s):
@@ -71,7 +71,6 @@ def unpack_giop_header(bytes_header):
     values = struct.unpack(GIOP_HEADER_STRUCT, bytes_header)
     header = GiopHeader(*values)
     assert header.giop == MAGIC_GIOP
-    assert header.order == LITTLE_ENDIAN
     assert header.major == 1
     assert header.minor in (0, 1)
     MessageType(header.message_type)
@@ -111,7 +110,7 @@ def find_ior(body, index=4):
         index = body.find(MAGIC_IOR, index)
         if index < 0:
             return False
-        size = struct.unpack('I', body[index-4:index]) - 1
+        size = struct.unpack('I', body[index-4:index])[0] - 1
         ior = body[index:index+size]
         if len(ior) == size and valid_ior(ior):
             start = index - 4

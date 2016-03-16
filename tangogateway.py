@@ -27,16 +27,17 @@ def forward(client_reader, client_writer, host, port):
 
 @asyncio.coroutine
 def inspect_pipe(reader, writer):
+    bind_address = writer._transport._sock.getsockname()[0]
     with closing(writer):
         while not reader.at_eof():
-            data = yield from read_frame(reader)
+            data = yield from read_frame(reader, bind_address)
             if not data:
                 break
             writer.write(data)
 
 
 @asyncio.coroutine
-def read_frame(reader):
+def read_frame(reader, bind_address):
     # Read header
     loop = reader._loop
     raw_header = yield from reader.read(12)
@@ -59,12 +60,10 @@ def read_frame(reader):
         return raw_frame
     ior, start, stop = ior
     host = ior.host[:-1].decode()
-    bind_address = reader._transport._sock.getsockname()[0]
     key = host, ior.port, bind_address
     # Start port forwarding
     if key not in loop.forward_dict:
         handler = partial(forward, host=host, port=ior.port)
-
         server = yield from asyncio.start_server(
             handler, bind_address, 0, loop=loop)
         value = (

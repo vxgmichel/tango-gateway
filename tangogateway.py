@@ -10,10 +10,10 @@ from contextlib import closing
 
 @asyncio.coroutine
 def forward_pipe(reader, writer):
+    print('new forward_pipe')
     with closing(writer):
         while not reader.at_eof():
             data = yield from reader.read(4096)
-            print('whoo!')
             writer.write(data)
 
 
@@ -52,7 +52,8 @@ def read_frame(reader, bind_address):
     # Unpack reply
     raw_reply_header, raw_body = raw_data[:12], raw_data[12:]
     reply_header = giop.unpack_reply_header(raw_reply_header)
-    if reply_header.reply_status != giop.ReplyStatus.NoException:
+    if reply_header.reply_status != giop.ReplyStatus.NoException or \
+       header.order != giop.LITTLE_ENDIAN:
         return raw_frame
     # Find IOR, host and port
     ior = giop.find_ior(raw_body)

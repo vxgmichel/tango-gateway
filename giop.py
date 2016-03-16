@@ -74,7 +74,9 @@ def unpack_giop_header(bytes_header):
     assert header.major == 1
     assert header.minor in (0, 1)
     MessageType(header.message_type)
-    return header
+    order = '<' if header.order == LITTLE_ENDIAN else '>'
+    values = struct.unpack(order + GIOP_HEADER_STRUCT, bytes_header)
+    return GiopHeader(*values)
 
 
 def pack_giop(header, body):
@@ -110,9 +112,9 @@ def find_ior(body, index=4):
         index = body.find(MAGIC_IOR, index)
         if index < 0:
             return False
-        size = struct.unpack('I', body[index-4:index])[0] - 1
-        ior = body[index:index+size]
-        if len(ior) == size and valid_ior(ior):
+        size = struct.unpack('I', body[index-4:index])[0]
+        ior = body[index:index+size-1]
+        if len(ior) == size-1 and valid_ior(ior):
             start = index - 4
             stop = index + struct.calcsize("{:d}s0I".format(size))
             return unmarshal_ior(ior), start, stop

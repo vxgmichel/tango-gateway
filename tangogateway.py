@@ -1,12 +1,16 @@
 """Provide a Tango gateway server."""
 
 import giop
-import PyTango
 import asyncio
 import argparse
 from enum import Enum
 from functools import partial
 from contextlib import closing
+
+try:
+    import PyTango
+except ImportError:
+    PyTango = None
 
 
 class Patch(Enum):
@@ -37,10 +41,6 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
                 origin += ' -> ' + ':'.join((whost, str(wport)))
                 print(origin.center(len(origin) + 2).center(60, '#'))
                 giop.print_bytes(data)
-                data = data.replace(b'8\x00tango://10.0.3.1:10000', b'<\x00tango://194.47.253.49:8888')
-                data = data.replace(b'8\x01tango://10.0.3.1:10000', b'<\x01tango://194.47.253.49:8888')
-                data = data.replace(b'2\x00tango://10.0.3.1:10000', b'6\x00tango://194.47.253.49:8888')
-                data = data.replace(b'2\x01tango://10.0.3.1:10000', b'6\x01tango://194.47.253.49:8888')
                 print(data)
             if b'10.0.3.1' in data:
                 print('!'*20)
@@ -204,15 +204,22 @@ def main(*args):
     parser.add_argument('--port', '-p', metavar='PORT', default=8000,
                         help='Port for the server (default is 8000)')
     parser.add_argument('--tango', '-t', metavar='HOST',
-                        help='Tango host (default is $TANGO_HOST)')
+                        help='Tango host (default is given by PyTango)')
     # Parse arguments
     namespace = parser.parse_args(*args)
     # Check Tango database
-    if namespace.tango:
-        db = PyTango.Database(namespace.tango)
+    if PyTango is None:
+        if namespace.tango:
+            print("Warning: PyTango not available, cannot check database")
+        else:
+            parser.error("PyTango not available, "
+                         "the tango host has to be defined explicitely")
     else:
-        db = PyTango.Database()
-    namespace.tango = db.get_db_host(), int(db.get_db_port())
+        if namespace.tango:
+            db = PyTango.Database(namespace.tango)
+        else:
+            db = PyTango.Database()
+        namespace.tango = db.get_db_host(), int(db.get_db_port())
     # Run the server
     return run_server(namespace.bind, namespace.port, namespace.tango)
 

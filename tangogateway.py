@@ -23,8 +23,17 @@ class Patch(Enum):
 def forward(client_reader, client_writer, host, port, patch=Patch.NONE):
     debug = patch == Patch.NONE or True
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
-    task1 = inspect_pipe(client_reader, ds_writer, Patch.NONE, debug=debug)
-    task2 = inspect_pipe(ds_reader, client_writer, patch, debug=debug)
+    if debug:
+        c_host, c_port = client_reader._transport._sock.getsockname()
+        s_host, s_port = ds_reader._transport._sock.getpeername()
+        client = ':'.join((c_host, str(c_port))) 
+        server = ':'.join((s_host, str(s_port)))
+        desc1 = client + ' -> ' + server
+        desc2 = server + ' -> ' + client
+    else:
+        desc1 = desc2 = debug
+    task1 = inspect_pipe(client_reader, ds_writer, patch=Patch.NONE, debug=desc1)
+    task2 = inspect_pipe(ds_reader, client_writer, patch=patch, debug=desc2)
     yield from asyncio.gather(task1, task2)
 
 
@@ -35,11 +44,7 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
         while not reader.at_eof():
             data = yield from read_frame(reader, bind_address, patch, debug)
             if debug and data:
-                rhost, rport = reader._transport._sock.getsockname()
-                whost, wport = writer._transport._sock.getsockname()
-                origin = ':'.join((rhost, str(rport)))
-                origin += ' -> ' + ':'.join((whost, str(wport)))
-                print(origin.center(len(origin) + 2).center(60, '#'))
+                print(debug.center(len(debug) + 2).center(60, '#'))
                 giop.print_bytes(data)
             writer.write(data)
 

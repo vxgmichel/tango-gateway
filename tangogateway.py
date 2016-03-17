@@ -18,15 +18,18 @@ class Patch(Enum):
     IOR = 1
     ZMQ = 2
 
+client_count = 0 
 
 @asyncio.coroutine
 def forward(client_reader, client_writer, host, port, patch=Patch.NONE):
     debug = patch == Patch.NONE or True
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
     if debug:
+        global client_count 
+        client_count += 1
         c_host, c_port = client_reader._transport._sock.getsockname()
         s_host, s_port = ds_reader._transport._sock.getpeername()
-        client = ':'.join((c_host, str(c_port))) 
+        client = ':'.join((c_host, str(c_port))) + " <{}>".format(client_count) 
         server = ':'.join((s_host, str(s_port)))
         desc1 = client + ' -> ' + server
         desc2 = server + ' -> ' + client

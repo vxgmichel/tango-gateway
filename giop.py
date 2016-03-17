@@ -17,7 +17,9 @@ IOR_STRUCT_3 = IOR_STRUCT_2 + '{:d}sH0I'
 IOR_LENGTH_STRUCT = 'BBHI{}sH0I'
 MIN_IOR_LENGTH = 76
 HEXA_DIGIT_SET = set(b'0123456789abcdef')
-
+ZMQ_STRUCT = 'I{:d}sI{:d}s'
+ZMQ_TOKEN = b'tcp://'
+STRING_TERM = b'\x00'
 
 # Enumerations
 
@@ -38,6 +40,15 @@ class ReplyStatus(IntEnum):
     SystemException = 2
     LocationForward = 3
 
+
+# Helpers
+
+def print_bytes(string):
+    print('Bytes (len={:d}):'.format(len(string)))
+    for x in range(0, len(string), 8):
+        a = str(string[x:x+4])[2:-1]
+        b = str(string[x+4:x+8])[2:-1]
+        print('... {:<4d}: {:16s} {:16s}'.format(x, a, b))
 
 # Structures
 
@@ -72,7 +83,7 @@ def unpack_giop_header(bytes_header):
     header = GiopHeader(*values)
     assert header.giop == MAGIC_GIOP
     assert header.major == 1
-    assert header.minor in (0, 1)
+    assert header.minor in range(3)
     MessageType(header.message_type)
     order = '<' if header.order == LITTLE_ENDIAN else '>'
     values = struct.unpack(order + GIOP_HEADER_STRUCT, bytes_header)
@@ -155,3 +166,38 @@ def update_ior_length(ior):
     form = IOR_LENGTH_STRUCT.format(len(ior.host))
     d['length'] = struct.calcsize(form) + len(ior.body)
     return IOR(**d)
+
+
+# ZMQ Helpers
+
+def find_zmq_endpoints(body):
+    if body.count(ZMQ_TOKEN, -200) != 2:
+        return False
+    index = body.find(ZMQ_TOKEN, 4)
+    sub_body = body[index-4:]
+    l1 = struct.unpack_from('I', sub_body)[-1]
+    try:
+        l2 = struct.unpack_from('I{:d}sI'.format(l1), sub_body)[-1]
+        form = ZMQ_STRUCT.format(l1, l2)
+        l1, s1, l2, s2 = struct.unpack(form, sub_body)
+    except ValueError:
+        return False
+    return s1, s2, index-4
+
+
+def decode_zmq_endpoint(encoded):
+    host, port = encoded[:-1].lstrip(ZMQ_TOKEN).decode().split(':')
+    port = int(port)
+    return host, port
+
+
+def encode_zmq_endpoint(host, port):
+    encoded = ':'.join((host, str(port))).encode()
+    return ZMQ_TOKEN + encoded + STRING_TERM
+
+
+def repack_zmq_endpoints(body, zmq1, zmq2, start):
+    l1, l2 = len(zmq1), len(zmq2)
+    form = ZMQ_STRUCT.format(l1, l2)
+    string = struct.pack(form, l1, zmq1, l2, zmq2)
+    return body[:start] + string

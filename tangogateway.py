@@ -4,46 +4,64 @@ import giop
 import PyTango
 import asyncio
 import argparse
+from enum import Enum
 from functools import partial
 from contextlib import closing
 
 
-@asyncio.coroutine
-def forward_pipe(reader, writer):
-    print('new forward_pipe')
-    with closing(writer):
-        while not reader.at_eof():
-            data = yield from reader.read(4096)
-            writer.write(data)
+class Patch(Enum):
+    NONE = 0
+    IOR = 1
+    ZMQ = 2
 
 
 @asyncio.coroutine
-def forward(client_reader, client_writer, host, port):
+def forward(client_reader, client_writer, host, port, patch=Patch.NONE):
+    debug = patch == Patch.NONE
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
-    task1 = forward_pipe(client_reader, ds_writer)
-    task2 = forward_pipe(ds_reader, client_writer)
+    task1 = inspect_pipe(client_reader, ds_writer, Patch.NONE, debug=debug)
+    task2 = inspect_pipe(ds_reader, client_writer, patch, debug=debug)
     yield from asyncio.gather(task1, task2)
 
 
 @asyncio.coroutine
-def inspect_pipe(reader, writer):
+def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
     bind_address = writer._transport._sock.getsockname()[0]
     with closing(writer):
         while not reader.at_eof():
-            data = yield from read_frame(reader, bind_address)
-            if not data:
-                break
+            data = yield from read_frame(reader, bind_address, patch, debug)
+            if debug and data:
+                rhost, rport = reader._transport._sock.getsockname()
+                whost, wport = writer._transport._sock.getsockname()
+                origin = ':'.join((rhost, str(rport)))
+                origin += ' -> ' + ':'.join((whost, str(wport)))
+                print(origin.center(len(origin) + 2).center(60, '#'))
+                giop.print_bytes(data)
+                data = data.replace(b'8\x00tango://10.0.3.1:10000', b'<\x00tango://194.47.253.49:8888')
+                data = data.replace(b'8\x01tango://10.0.3.1:10000', b'<\x01tango://194.47.253.49:8888')
+                data = data.replace(b'2\x00tango://10.0.3.1:10000', b'6\x00tango://194.47.253.49:8888')
+                data = data.replace(b'2\x01tango://10.0.3.1:10000', b'6\x01tango://194.47.253.49:8888')
+                print(data)
+            if b'10.0.3.1' in data:
+                print('!'*20)
+                print(data)
+                print('!'*20)
             writer.write(data)
 
 
 @asyncio.coroutine
-def read_frame(reader, bind_address):
+def read_frame(reader, bind_address, patch=Patch.NONE, debug=False):
+    # No patch
+    if patch == Patch.NONE:
+        return (yield from reader.read(4096))
     # Read header
     loop = reader._loop
     raw_header = yield from reader.read(12)
     if not raw_header:
         return raw_header
     header = giop.unpack_giop_header(raw_header)
+    if debug:
+        print(header)
     # Read data
     raw_data = yield from reader.read(header.size)
     raw_frame = raw_header + raw_data
@@ -52,46 +70,89 @@ def read_frame(reader, bind_address):
     # Unpack reply
     raw_reply_header, raw_body = raw_data[:12], raw_data[12:]
     reply_header = giop.unpack_reply_header(raw_reply_header)
+    if debug:
+        print(reply_header)
     if reply_header.reply_status != giop.ReplyStatus.NoException or \
        header.order != giop.LITTLE_ENDIAN:
         return raw_frame
+    if debug:
+        giop.print_bytes(raw_body)
+    # Patch body
+    if patch == Patch.IOR:
+        new_body = yield from check_ior(raw_body, bind_address, loop)
+    elif patch == Patch.ZMQ:
+        new_body = yield from check_zmq(raw_body, bind_address, loop)
+    # Ignore
+    if not new_body:
+        return raw_frame
+    # Repack frame
+    raw_data = raw_reply_header + new_body
+    return giop.pack_giop(header, raw_data)
+
+
+@asyncio.coroutine
+def check_ior(raw_body, bind_address, loop):
     # Find IOR, host and port
     ior = giop.find_ior(raw_body)
     if not ior:
-        return raw_frame
+        return False
     ior, start, stop = ior
     host = ior.host[:-1].decode()
     key = host, ior.port, bind_address
     # Start port forwarding
     if key not in loop.forward_dict:
-        handler = partial(forward, host=host, port=ior.port)
-        server = yield from asyncio.start_server(
-            handler, bind_address, 0, loop=loop)
-        value = (
-            server,
-            server.sockets[0].getsockname()[0],
-            server.sockets[0].getsockname()[1],)
+        value = yield from start_forward(
+            host, ior.port, bind_address, loop, Patch.ZMQ)
         loop.forward_dict[key] = value
-        msg = "Forwarding {0[0]} port {0[1]} to {1[0]} port {1[1]}..."
-        print(msg.format(value[1:], key))
     # Patch IOR
     server, host, port = loop.forward_dict[key]
-    ior = ior._replace(host=host.encode() + b'\x00', port=port)
+    ior = ior._replace(host=host.encode() + giop.STRING_TERM, port=port)
+    if b'10.0.3.1' in ior.body:
+        print('!'*20)
+        print(ior.body)
+        print('!'*20)
     # Repack body
-    raw_body = giop.repack_ior(raw_body, ior, start, stop)
-    raw_data = raw_reply_header + raw_body
-    return giop.pack_giop(header, raw_data)
+    return giop.repack_ior(raw_body, ior, start, stop)
 
 
 @asyncio.coroutine
-def inspect(client_reader, client_writer):
-    """Inspect the traffic between """
-    loop = client_reader._loop
-    db_reader, db_writer = yield from asyncio.open_connection(
-        *loop.tango_host, loop=loop)
-    task1 = inspect_pipe(client_reader, db_writer)
-    task2 = inspect_pipe(db_reader, client_writer)
-    yield from asyncio.gather(task1, task2)
+def check_zmq(raw_body, bind_address, loop):
+    # Find zmq token
+    zmq = giop.find_zmq_endpoints(raw_body)
+    if not zmq:
+        return False
+    # Exctract endpoints
+    new_endpoints = []
+    zmq1, zmq2, start = zmq
+    for zmq in (zmq1, zmq2):
+        host, port = giop.decode_zmq_endpoint(zmq)
+        key = host, port, bind_address
+        # Start port forwarding
+        if key not in loop.forward_dict:
+            value = yield from start_forward(
+                host, port, bind_address, loop, Patch.NONE)
+            loop.forward_dict[key] = value
+        # Make new endpoints
+        server, host, port = loop.forward_dict[key]
+        new_endpoints.append(giop.encode_zmq_endpoint(host, port))
+    # Repack body
+    zmq1, zmq2 = new_endpoints
+    return giop.repack_zmq_endpoints(raw_body, zmq1, zmq2, start)
+
+
+@asyncio.coroutine
+def start_forward(host, port, bind_address, loop, patch=Patch.NONE):
+    # Start port forwarding
+    handler = partial(forward, host=host, port=port, patch=patch)
+    server = yield from asyncio.start_server(
+        handler, bind_address, 0, loop=loop)
+    value = (
+        server,
+        server.sockets[0].getsockname()[0],
+        server.sockets[0].getsockname()[1],)
+    msg = "Forwarding {0[0]} port {0[1]} to {1[0]} port {1[1]}..."
+    print(msg.format(value[1:], (host, port)))
+    return value
 
 
 def run_server(bind_address, server_port, tango_host):
@@ -103,7 +164,9 @@ def run_server(bind_address, server_port, tango_host):
     loop.tango_host = tango_host
     loop.forward_dict = {}
     # Create server
-    coro = asyncio.start_server(inspect, bind_address, server_port)
+    host, port = tango_host
+    handler = partial(forward, host=host, port=port, patch=Patch.IOR)
+    coro = asyncio.start_server(handler, bind_address, server_port)
     server = loop.run_until_complete(coro)
     # Serve requests until Ctrl+C is pressed
     msg = ('Serving a Tango gateway to {0[0]} port {0[1]} '
@@ -126,7 +189,8 @@ def run_server(bind_address, server_port, tango_host):
     for task in tasks:
         task.cancel()
     # Wait for all the tasks to finish
-    loop.run_until_complete(asyncio.wait(tasks))
+    if tasks:
+        loop.run_until_complete(asyncio.wait(tasks))
     loop.close()
 
 

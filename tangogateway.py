@@ -6,7 +6,7 @@ import argparse
 from enum import Enum
 from functools import partial
 from contextlib import closing
-
+import struct
 try:
     import PyTango
 except ImportError:
@@ -21,7 +21,7 @@ class Patch(Enum):
 
 @asyncio.coroutine
 def forward(client_reader, client_writer, host, port, patch=Patch.NONE):
-    debug = patch == Patch.NONE
+    debug = patch == Patch.NONE or True
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
     task1 = inspect_pipe(client_reader, ds_writer, Patch.NONE, debug=debug)
     task2 = inspect_pipe(ds_reader, client_writer, patch, debug=debug)
@@ -41,11 +41,6 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
                 origin += ' -> ' + ':'.join((whost, str(wport)))
                 print(origin.center(len(origin) + 2).center(60, '#'))
                 giop.print_bytes(data)
-                print(data)
-            if b'10.0.3.1' in data:
-                print('!'*20)
-                print(data)
-                print('!'*20)
             writer.write(data)
 
 
@@ -57,11 +52,9 @@ def read_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # Read header
     loop = reader._loop
     raw_header = yield from reader.read(12)
-    if not raw_header:
+    if not raw_header or not raw_header.startswith(b'GIOP'):
         return raw_header
     header = giop.unpack_giop_header(raw_header)
-    if debug:
-        print(header)
     # Read data
     raw_data = yield from reader.read(header.size)
     raw_frame = raw_header + raw_data
@@ -70,13 +63,9 @@ def read_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # Unpack reply
     raw_reply_header, raw_body = raw_data[:12], raw_data[12:]
     reply_header = giop.unpack_reply_header(raw_reply_header)
-    if debug:
-        print(reply_header)
     if reply_header.reply_status != giop.ReplyStatus.NoException or \
        header.order != giop.LITTLE_ENDIAN:
         return raw_frame
-    if debug:
-        giop.print_bytes(raw_body)
     # Patch body
     if patch == Patch.IOR:
         new_body = yield from check_ior(raw_body, bind_address, loop)
@@ -107,10 +96,6 @@ def check_ior(raw_body, bind_address, loop):
     # Patch IOR
     server, host, port = loop.forward_dict[key]
     ior = ior._replace(host=host.encode() + giop.STRING_TERM, port=port)
-    if b'10.0.3.1' in ior.body:
-        print('!'*20)
-        print(ior.body)
-        print('!'*20)
     # Repack body
     return giop.repack_ior(raw_body, ior, start, stop)
 
@@ -211,6 +196,7 @@ def main(*args):
     if PyTango is None:
         if namespace.tango:
             print("Warning: PyTango not available, cannot check database")
+            namespace.tango = namespace.tango.split(":")
         else:
             parser.error("PyTango not available, "
                          "the tango host has to be defined explicitely")

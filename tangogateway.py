@@ -110,7 +110,7 @@ def check_ior(raw_body, bind_address, loop):
     # Start port forwarding
     if key not in loop.forward_dict:
         value = yield from start_forward(
-            host, ior.port, bind_address, loop, HandlerType.DS)
+            host, ior.port, bind_address, HandlerType.DS, loop)
         loop.forward_dict[key] = value
     # Patch IOR
     server, host, port = loop.forward_dict[key]
@@ -134,7 +134,7 @@ def check_zmq(raw_body, bind_address, loop):
         # Start port forwarding
         if key not in loop.forward_dict:
             value = yield from start_forward(
-                host, port, bind_address, loop, HandlerType.ZMQ)
+                host, port, bind_address, HandlerType.ZMQ, loop)
             loop.forward_dict[key] = value
         # Make new endpoints
         server, host, port = loop.forward_dict[key]
@@ -145,13 +145,13 @@ def check_zmq(raw_body, bind_address, loop):
 
 
 @asyncio.coroutine
-def start_forward(host, port, bind_address, handler_type):
+def start_forward(host, port, bind_address, handler_type, loop):
     handler_dict = {
         HandlerType.DS: handle_ds_client,
         HandlerType.ZMQ: handle_zmq_client}
     # Start port forwarding
     func = handler_dict[handler_type]
-    handler = partial(forward, host=host, port=port, patch=patch)
+    handler = partial(func, host=host, port=port)
     server = yield from asyncio.start_server(
         handler, bind_address, 0, loop=loop)
     value = (
@@ -166,6 +166,7 @@ def start_forward(host, port, bind_address, handler_type):
 @asyncio.coroutine
 def handle_db_client(reader, writer, host, port):
     with closing(writer):
+        bind_address = writer._transport._sock.getsockname()[0]
         db_reader, db_writer = yield from asyncio.open_connection(
             host, port, loop=reader._loop)
         with closing(db_writer):
@@ -191,6 +192,7 @@ def handle_db_client(reader, writer, host, port):
 @asyncio.coroutine
 def handle_ds_client(reader, writer, host, port):
     with closing(writer):
+        bind_address = writer._transport._sock.getsockname()[0]
         ds_reader, ds_writer = yield from asyncio.open_connection(
             host, port, loop=reader._loop)
         with closing(ds_writer):
@@ -212,22 +214,22 @@ def handle_ds_client(reader, writer, host, port):
 
 
 @asyncio.coroutine
-def handler_zmq_client(client_reader, client_writer, host, port):
-    debug = patch == Patch.NONE or True
+def handle_zmq_client(client_reader, client_writer, host, port):
+    debug = True 
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
     if debug:
         global CLIENT_COUNT
         CLIENT_COUNT += 1
         c_host, c_port = client_reader._transport._sock.getsockname()
         s_host, s_port = ds_reader._transport._sock.getpeername()
-        client = ':'.join((c_host, str(c_port))) + " <{}>".format(client_count)
+        client = ':'.join((c_host, str(c_port))) + " <{}>".format(CLIENT_COUNT)
         server = ':'.join((s_host, str(s_port)))
         desc1 = client + ' -> ' + server
         desc2 = server + ' -> ' + client
     else:
         desc1 = desc2 = debug
     task1 = inspect_pipe(client_reader, ds_writer, patch=Patch.NONE, debug=desc1)
-    task2 = inspect_pipe(ds_reader, client_writer, patch=patch, debug=desc2)
+    task2 = inspect_pipe(ds_reader, client_writer, patch=Patch.NONE, debug=desc2)
     yield from asyncio.gather(task1, task2)
 
 

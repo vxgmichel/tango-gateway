@@ -20,6 +20,8 @@ HEXA_DIGIT_SET = set(b'0123456789abcdef')
 ZMQ_STRUCT = 'I{:d}sI{:d}s'
 ZMQ_TOKEN = b'tcp://'
 STRING_TERM = b'\x00'
+DEVVARSTRINGARRAY_TOKEN = b'DevVarStringArray\x00'
+CSD_OFFSET = 48
 
 # Enumerations
 
@@ -166,6 +168,26 @@ def update_ior_length(ior):
     form = IOR_LENGTH_STRUCT.format(len(ior.host))
     d['length'] = struct.calcsize(form) + len(ior.body)
     return IOR(**d)
+
+
+# CSD Helpers
+
+def find_csd(body):
+    index = body.rfind(DEVVARSTRINGARRAY_TOKEN)
+    if index < 0:
+        return False
+    index += CSD_OFFSET
+    subbody = body[index:]
+    size = struct.unpack_from('I', subbody)[0]
+    if len(subbody) != size + 4:
+        return False
+    return subbody[4:], index
+
+
+def repack_csd(body, csd, start):
+    l = len(csd)
+    string = struct.pack('I{:d}s'.format(l), l, csd)
+    return body[:start] + string
 
 
 # ZMQ Helpers

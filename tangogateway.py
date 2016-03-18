@@ -66,7 +66,7 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
 @asyncio.coroutine
 def read_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # No patch
-    if patch in (Patch.NONE, Patch.CSD):
+    if patch in (Patch.NONE,):
         return (yield from reader.read(4096))
     # Read header
     loop = reader._loop
@@ -90,6 +90,8 @@ def read_frame(reader, bind_address, patch=Patch.NONE, debug=False):
         new_body = yield from check_ior(raw_body, bind_address, loop)
     elif patch == Patch.ZMQ:
         new_body = yield from check_zmq(raw_body, bind_address, loop)
+    elif patch == Patch.CSD:
+        new_body = yield from check_csd(raw_body, bind_address, loop)
     # Ignore
     if not new_body:
         return raw_frame
@@ -142,6 +144,17 @@ def check_zmq(raw_body, bind_address, loop):
     # Repack body
     zmq1, zmq2 = new_endpoints
     return giop.repack_zmq_endpoints(raw_body, zmq1, zmq2, start)
+
+
+@asyncio.coroutine
+def check_csd(raw_body, bind_address, loop):
+    csd = giop.find_csd(raw_body)
+    if not csd:
+        return False
+    csd, start = csd
+    new_csd = ':'.join((bind_address, loop.server_port))
+    new_csd = new_csd.encode() + giop.STRING_TERM
+    return giop.repack_csd(raw_body, new_csd, start)
 
 
 @asyncio.coroutine
@@ -215,7 +228,7 @@ def handle_ds_client(reader, writer, host, port):
 
 @asyncio.coroutine
 def handle_zmq_client(client_reader, client_writer, host, port):
-    debug = True 
+    debug = True
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
     if debug:
         global CLIENT_COUNT

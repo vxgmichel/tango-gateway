@@ -20,9 +20,23 @@ class Patch(Enum):
 
 client_count = 0 
 
+CHECK_PORTS = [5432, 55557]
+
+def find_ports(frame, ports=CHECK_PORTS):
+    return [port for port in ports if find_port(port, frame)]
+
+def find_port(port, frame):
+    port_str = struct.pack("H", port)
+    port_byte = str(port).encode()
+    ascii_str = giop.bytes_to_ascii(port_str)
+    ascii_byte = giop.bytes_to_ascii(port_byte)
+    return any( x in frame for x in [port_str, port_byte, ascii_str, ascii_byte])
+
+
+
 @asyncio.coroutine
 def forward(client_reader, client_writer, host, port, patch=Patch.NONE):
-    debug = patch == Patch.NONE or True
+    debug = patch == Patch.NONE or True 
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
     if debug:
         global client_count 
@@ -48,6 +62,7 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
             data = yield from read_frame(reader, bind_address, patch, debug)
             if debug and data:
                 print(debug.center(len(debug) + 2).center(60, '#'))
+                print(find_ports(data)) 
                 giop.print_bytes(data)
             writer.write(data)
 

@@ -58,7 +58,7 @@ def find_port(port, frame):
 def find_all(string, sub):
     start = 0
     while True:
-        start = a_str.find(sub, start)
+        start = string.find(sub, start)
         if start == -1:
             return
         yield start
@@ -82,24 +82,24 @@ def inspect_pipe(reader, writer, origin, debug=False):
 def read_zmq_frame(reader, bind_address, origin):
     loop = reader._loop
     # Get new db
-    if origin == Origin.Client:
+    if origin == Origin.CLIENT:
         new_db = ':'.join(loop.tango_host).encode()
     else:
         new_db = ':'.join((bind_address, loop.server_port)).encode()
     # Read frame
     body = yield from reader.read(4096)
     changes = []
-    while index in find_all(body, b'tango://'):
-        start = index-2 if origin == Origin.Client else index-1
+    for index in find_all(body, b'tango://'):
+        start = index-2 if origin == Origin.CLIENT else index-1
         size = body[start]
         stop = index+size-1
         read = body[start+1:stop]
         prot, empty, db, *device = read.split(b'/')
         new_read = b'/'.join((prot, empty, new_db) + tuple(device))
-        changes.append(start, stop, bytes([len(new_read)]) + new_read)
+        changes.append((start, stop, bytes([len(new_read)]) + new_read))
     # No changes
     if not changes:
-        return False
+        return body 
     # Apply changes
     new_body, prev = b'', 0
     for start, stop, change in changes:
@@ -107,6 +107,8 @@ def read_zmq_frame(reader, bind_address, origin):
         prev = stop
     new_body += body[prev:]
     # Return
+    print(body)
+    print(new_body)
     return new_body
 
 

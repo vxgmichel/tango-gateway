@@ -28,6 +28,11 @@ class HandlerType(Enum):
     ZMQ = 3
 
 
+class Origin(Enum):
+    CLIENT = 1
+    DS = 2
+
+
 CLIENT_COUNT = 0
 CHECK_PORTS = []
 IMPORT_DEVICE = b'DbImportDevice'
@@ -50,39 +55,58 @@ def find_port(port, frame):
                for x in [port_str, port_byte, ascii_str, ascii_byte])
 
 
+def find_all(string, sub):
+    start = 0
+    while True:
+        start = a_str.find(sub, start)
+        if start == -1:
+            return
+        yield start
+        start += len(sub)
+
+
 @asyncio.coroutine
-def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
+def inspect_pipe(reader, writer, origin, debug=False):
     bind_address = writer._transport._sock.getsockname()[0]
     with closing(writer):
         while not reader.at_eof():
-            data = yield from read_zmq_frame(reader, bind_address, patch)
+            data = yield from read_zmq_frame(reader, bind_address, origin)
             if debug and data:
                 print(debug.center(len(debug) + 2).center(60, '#'))
-                #print(find_ports(data))
-                #giop.print_bytes(data)
+                # print(find_ports(data))
+                # giop.print_bytes(data)
             writer.write(data)
 
 
 @asyncio.coroutine
-def read_zmq_frame(reader, bind_address, patch):
+def read_zmq_frame(reader, bind_address, origin):
     loop = reader._loop
+    # Get new db
+    if origin == Origin.Client:
+        new_db = ':'.join(loop.tango_host).encode()
+    else:
+        new_db = ':'.join((bind_address, loop.server_port)).encode()
+    # Read frame
     body = yield from reader.read(4096)
-    print(body, patch)
-    index = body.find(b'tango://', 2)
-    if index < 0 or patch == Patch.NONE:
-        return body
-    start = index-2
-    size = body[start]
-    stop = index+size-1
-    read = body[start+1:stop]
-    #print(read)
-    #print(read.split(b'/'))
-    prot, empty, db, *device = read.split(b'/')
-    new_db = ':'.join(loop.tango_host).encode()
-    new_read = b'/'.join((prot, empty, new_db) + tuple(device))
-    new_body = body[:start] + bytes([len(new_read)])
-    new_body += new_read + body[stop:]
-    print(new_body)
+    changes = []
+    while index in find_all(body, b'tango://'):
+        start = index-2 if origin == Origin.Client else index-1
+        size = body[start]
+        stop = index+size-1
+        read = body[start+1:stop]
+        prot, empty, db, *device = read.split(b'/')
+        new_read = b'/'.join((prot, empty, new_db) + tuple(device))
+        changes.append(start, stop, bytes([len(new_read)]) + new_read)
+    # No changes
+    if not changes:
+        return False
+    # Apply changes
+    new_body, prev = b'', 0
+    for start, stop, change in changes:
+        new_body += body[prev:start] + change
+        prev = stop
+    new_body += body[prev:]
+    # Return
     return new_body
 
 
@@ -262,8 +286,8 @@ def handle_zmq_client(client_reader, client_writer, host, port):
     desc1 = client + ' -> ' + server
     desc2 = server + ' -> ' + client
     # ...
-    task1 = inspect_pipe(client_reader, ds_writer, patch=Patch.SUB, debug=desc1)
-    task2 = inspect_pipe(ds_reader, client_writer, patch=Patch.NONE, debug=desc2)
+    task1 = inspect_pipe(client_reader, ds_writer, Origin.CLIENT, debug=desc1)
+    task2 = inspect_pipe(ds_reader, client_writer, Origin.DS, debug=desc2)
     yield from asyncio.gather(task1, task2)
 
 

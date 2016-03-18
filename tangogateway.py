@@ -58,8 +58,8 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
             data = yield from read_zmq_frame(reader, bind_address, patch)
             if debug and data:
                 print(debug.center(len(debug) + 2).center(60, '#'))
-                print(find_ports(data))
-                giop.print_bytes(data)
+                #print(find_ports(data))
+                #giop.print_bytes(data)
             writer.write(data)
 
 
@@ -67,18 +67,22 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
 def read_zmq_frame(reader, bind_address, patch):
     loop = reader._loop
     body = yield from reader.read(4096)
-    index = body.find(db, 2)
-    if index < 0:
+    print(body, patch)
+    index = body.find(b'tango://', 2)
+    if index < 0 or patch == Patch.NONE:
         return body
     start = index-2
     size = body[start]
     stop = index+size-1
     read = body[start+1:stop]
-    prot, empty, db, domain, family, name = read.split(b'/')
-    new_db = ':'.join((bind_address. loop.server_port)).encode()
-    new_read = b'/'.join((prot, empty, new_db, domain, family, name))
+    #print(read)
+    #print(read.split(b'/'))
+    prot, empty, db, *device = read.split(b'/')
+    new_db = ':'.join(loop.tango_host).encode()
+    new_read = b'/'.join((prot, empty, new_db) + tuple(device))
     new_body = body[:start] + bytes([len(new_read)])
     new_body += new_read + body[stop:]
+    print(new_body)
     return new_body
 
 

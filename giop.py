@@ -23,6 +23,7 @@ STRING_TERM = b'\x00'
 DEVVARSTRINGARRAY_TOKEN = b'DevVarStringArray\x00'
 CSD_OFFSET = 48
 
+
 # Enumerations
 
 class MessageType(IntEnum):

@@ -19,6 +19,7 @@ class Patch(Enum):
     IOR = 1
     CSD = 2
     ZMQ = 3
+    SUB = 4
 
 
 class HandlerType(Enum):
@@ -49,13 +50,12 @@ def find_port(port, frame):
                for x in [port_str, port_byte, ascii_str, ascii_byte])
 
 
-
 @asyncio.coroutine
 def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
     bind_address = writer._transport._sock.getsockname()[0]
     with closing(writer):
         while not reader.at_eof():
-            data = yield from read_frame(reader, bind_address, patch, debug)
+            data = yield from read_zmq_frame(reader, bind_address, patch)
             if debug and data:
                 print(debug.center(len(debug) + 2).center(60, '#'))
                 print(find_ports(data))
@@ -64,14 +64,33 @@ def inspect_pipe(reader, writer, patch=Patch.NONE, debug=False):
 
 
 @asyncio.coroutine
-def read_frame(reader, bind_address, patch=Patch.NONE, debug=False):
+def read_zmq_frame(reader, bind_address, patch):
+    loop = reader._loop
+    body = yield from reader.read(4096)
+    index = body.find(db, 2)
+    if index < 0:
+        return body
+    start = index-2
+    size = body[start]
+    stop = index+size-1
+    read = body[start+1:stop]
+    prot, empty, db, domain, family, name = read.split(b'/')
+    new_db = ':'.join((bind_address. loop.server_port)).encode()
+    new_read = b'/'.join((prot, empty, new_db, domain, family, name))
+    new_body = body[:start] + bytes([len(new_read)])
+    new_body += new_read + body[stop:]
+    return new_body
+
+
+@asyncio.coroutine
+def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # No patch
     if patch in (Patch.NONE,):
         return (yield from reader.read(4096))
     # Read header
     loop = reader._loop
     raw_header = yield from reader.read(12)
-    if not raw_header or not raw_header.startswith(b'GIOP'):
+    if not raw_header or not raw_header.startswith(giop.MAGIC_GIOP):
         return raw_header
     header = giop.unpack_giop_header(raw_header)
     # Read data
@@ -185,7 +204,7 @@ def handle_db_client(reader, writer, host, port):
         with closing(db_writer):
             while not reader.at_eof() and not db_reader.at_eof():
                 # Read request
-                request = yield from read_frame(reader, bind_address)
+                request = yield from read_giop_frame(reader, bind_address)
                 if not request:
                     break
                 db_writer.write(request)
@@ -197,7 +216,7 @@ def handle_db_client(reader, writer, host, port):
                 else:
                     patch = Patch.NONE
                 # Read reply_header
-                reply = yield from read_frame(
+                reply = yield from read_giop_frame(
                     db_reader, bind_address, patch=patch)
                 writer.write(reply)
 
@@ -211,7 +230,7 @@ def handle_ds_client(reader, writer, host, port):
         with closing(ds_writer):
             while not reader.at_eof() and not ds_reader.at_eof():
                 # Read request
-                request = yield from read_frame(reader, bind_address)
+                request = yield from read_giop_frame(reader, bind_address)
                 if not request:
                     break
                 ds_writer.write(request)
@@ -221,27 +240,25 @@ def handle_ds_client(reader, writer, host, port):
                 else:
                     patch = Patch.NONE
                 # Read reply_header
-                reply = yield from read_frame(
+                reply = yield from read_giop_frame(
                     ds_reader, bind_address, patch=patch)
                 writer.write(reply)
 
 
 @asyncio.coroutine
 def handle_zmq_client(client_reader, client_writer, host, port):
-    debug = True
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
-    if debug:
-        global CLIENT_COUNT
-        CLIENT_COUNT += 1
-        c_host, c_port = client_reader._transport._sock.getsockname()
-        s_host, s_port = ds_reader._transport._sock.getpeername()
-        client = ':'.join((c_host, str(c_port))) + " <{}>".format(CLIENT_COUNT)
-        server = ':'.join((s_host, str(s_port)))
-        desc1 = client + ' -> ' + server
-        desc2 = server + ' -> ' + client
-    else:
-        desc1 = desc2 = debug
-    task1 = inspect_pipe(client_reader, ds_writer, patch=Patch.NONE, debug=desc1)
+    # Debug
+    global CLIENT_COUNT
+    CLIENT_COUNT += 1
+    c_host, c_port = client_reader._transport._sock.getsockname()
+    s_host, s_port = ds_reader._transport._sock.getpeername()
+    client = ':'.join((c_host, str(c_port))) + " <{}>".format(CLIENT_COUNT)
+    server = ':'.join((s_host, str(s_port)))
+    desc1 = client + ' -> ' + server
+    desc2 = server + ' -> ' + client
+    # ...
+    task1 = inspect_pipe(client_reader, ds_writer, patch=Patch.SUB, debug=desc1)
     task2 = inspect_pipe(ds_reader, client_writer, patch=Patch.NONE, debug=desc2)
     yield from asyncio.gather(task1, task2)
 

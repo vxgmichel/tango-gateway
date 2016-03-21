@@ -103,6 +103,14 @@ def start_forward(host, port, handler_type,
 
 
 @asyncio.coroutine
+def get_host_name(stream):
+    loop = stream._loop
+    sock = stream._transport._sock
+    name_info = yield from loop.getnameinfo(sock.getsockname())
+    return name_info[0]
+
+
+@asyncio.coroutine
 def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # Read header
     loop = reader._loop
@@ -142,7 +150,8 @@ def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
 @asyncio.coroutine
 def handle_db_client(reader, writer, host, port):
     with closing(writer):
-        bind_address = writer._transport._sock.getsockname()[0]
+        bind_address = yield from get_host_name(writer)
+        # Connect to client
         db_reader, db_writer = yield from asyncio.open_connection(
             host, port, loop=reader._loop)
         with closing(db_writer):
@@ -167,6 +176,7 @@ def handle_db_client(reader, writer, host, port):
 
 @asyncio.coroutine
 def check_ior(raw_body, bind_address, loop):
+    print('ior', bind_address)
     # Find IOR, host and port
     ior = giop.find_ior(raw_body)
     if not ior:
@@ -185,6 +195,7 @@ def check_ior(raw_body, bind_address, loop):
 
 @asyncio.coroutine
 def check_csd(raw_body, bind_address, loop):
+    print('csd', bind_address)
     csd = giop.find_csd(raw_body)
     if not csd:
         return False
@@ -199,7 +210,8 @@ def check_csd(raw_body, bind_address, loop):
 @asyncio.coroutine
 def handle_ds_client(reader, writer, host, port):
     with closing(writer):
-        bind_address = writer._transport._sock.getsockname()[0]
+        bind_address = yield from get_host_name(writer)
+        # Connect to client
         ds_reader, ds_writer = yield from asyncio.open_connection(
             host, port, loop=reader._loop)
         with closing(ds_writer):
@@ -222,6 +234,7 @@ def handle_ds_client(reader, writer, host, port):
 
 @asyncio.coroutine
 def check_zmq(raw_body, bind_address, loop):
+    print('zmq', bind_address)
     # Find zmq token
     zmq = giop.find_zmq_endpoints(raw_body)
     if not zmq:
@@ -265,7 +278,7 @@ def handle_zmq_client(client_reader, client_writer, host, port):
 
 @asyncio.coroutine
 def inspect_pipe(reader, writer, origin, debug=False):
-    bind_address = writer._transport._sock.getsockname()[0]
+    bind_address = yield from get_host_name(writer)
     with closing(writer):
         while not reader.at_eof():
             data = yield from read_zmq_frame(
@@ -289,7 +302,7 @@ def read_zmq_frame(reader, bind_address, origin, debug=False):
     for index in find_all(body, b'tango://'):
         start = index-2 if origin == Origin.CLIENT else index-1
         size = body[start]
-        stop = index+size-1
+        stop = start + size + 1
         read = body[start+1:stop]
         prot, empty, db, *device = read.split(b'/')
         new_read = b'/'.join((prot, empty, new_db) + tuple(device))

@@ -14,6 +14,14 @@ except ImportError:
     PyTango = None
 
 
+CHECK_PORTS = []  # Fill up for debugging purposes
+IMPORT_DEVICE = b'DbImportDevice'
+GET_CSDB_SERVER = b'DbGetCSDbServerList'
+ZMQ_SUBSCRIPTION_CHANGE = b'ZmqEventSubscriptionChange'
+
+
+# Enumerations
+
 class Patch(Enum):
     NONE = 0
     IOR = 1
@@ -31,13 +39,6 @@ class HandlerType(Enum):
 class Origin(Enum):
     CLIENT = 1
     DS = 2
-
-
-CLIENT_COUNT = 0
-CHECK_PORTS = []  # Fill up for debugging purposes
-IMPORT_DEVICE = b'DbImportDevice'
-GET_CSDB_SERVER = b'DbGetCSDbServerList'
-ZMQ_SUBSCRIPTION_CHANGE = b'ZmqEventSubscriptionChange'
 
 
 # Debug
@@ -68,6 +69,38 @@ def find_all(string, sub):
 
 
 # Coroutine helpers
+
+@asyncio.coroutine
+def start_forward(host, port, handler_type,
+                  bind_address='', server_port=0, loop=None):
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    # Check cache
+    key = host, port, bind_address
+    if key in loop.forward_dict:
+        return (yield from loop.forward_dict[key])
+    loop.forward_dict[key] = asyncio.Future(loop=loop)
+    # Hanlder dict
+    handler_dict = {
+        HandlerType.DB: handle_db_client,
+        HandlerType.DS: handle_ds_client,
+        HandlerType.ZMQ: handle_zmq_client}
+    # Start port forwarding
+    func = handler_dict[handler_type]
+    handler = partial(func, host=host, port=port)
+    server = yield from asyncio.start_server(
+        handler, bind_address, server_port, loop=loop)
+    value = (
+        server,
+        server.sockets[0].getsockname()[0],
+        server.sockets[0].getsockname()[1],)
+    # Print message
+    msg = "Forwarding {0} traffic on {1[0]} port {1[1]} to {2[0]} port {2[1]}"
+    print(msg.format(handler_type.name, value[1:], (host, port)))
+    # Set cache
+    loop.forward_dict[key].set(value)
+    return value
+
 
 @asyncio.coroutine
 def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
@@ -102,25 +135,6 @@ def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # Repack frame
     raw_data = raw_reply_header + new_body
     return giop.pack_giop(header, raw_data)
-
-
-@asyncio.coroutine
-def start_forward(host, port, bind_address, handler_type, loop):
-    handler_dict = {
-        HandlerType.DS: handle_ds_client,
-        HandlerType.ZMQ: handle_zmq_client}
-    # Start port forwarding
-    func = handler_dict[handler_type]
-    handler = partial(func, host=host, port=port)
-    server = yield from asyncio.start_server(
-        handler, bind_address, 0, loop=loop)
-    value = (
-        server,
-        server.sockets[0].getsockname()[0],
-        server.sockets[0].getsockname()[1],)
-    msg = "Forwarding {0[0]} port {0[1]} to {1[0]} port {1[1]}..."
-    print(msg.format(value[1:], (host, port)))
-    return value
 
 
 # Inspect DB traffic
@@ -165,12 +179,9 @@ def check_ior(raw_body, bind_address, loop):
     host = ior.host[:-1].decode()
     key = host, ior.port, bind_address
     # Start port forwarding
-    if key not in loop.forward_dict:
-        value = yield from start_forward(
-            host, ior.port, bind_address, HandlerType.DS, loop)
-        loop.forward_dict[key] = value
+    server, host, port = yield from start_forward(
+        host, ior.port, HandlerType.DS, bind_address, loop=loop)
     # Patch IOR
-    server, host, port = loop.forward_dict[key]
     ior = ior._replace(host=host.encode() + giop.STRING_TERM, port=port)
     # Repack body
     return giop.repack_ior(raw_body, ior, start, stop)
@@ -227,12 +238,9 @@ def check_zmq(raw_body, bind_address, loop):
         host, port = giop.decode_zmq_endpoint(zmq)
         key = host, port, bind_address
         # Start port forwarding
-        if key not in loop.forward_dict:
-            value = yield from start_forward(
-                host, port, bind_address, HandlerType.ZMQ, loop)
-            loop.forward_dict[key] = value
+        server, host, port = yield from start_forward(
+            host, port, HandlerType.ZMQ, bind_address, loop=loop)
         # Make new endpoints
-        server, host, port = loop.forward_dict[key]
         new_endpoints.append(giop.encode_zmq_endpoint(host, port))
     # Repack body
     zmq1, zmq2 = new_endpoints
@@ -314,13 +322,10 @@ def run_server(bind_address, server_port, tango_host):
     loop.forward_dict = {}
     # Create server
     host, port = tango_host
-    handler = partial(handle_db_client, host=host, port=port)
-    coro = asyncio.start_server(handler, bind_address, server_port)
-    server = loop.run_until_complete(coro)
+    coro = start_forward(
+        host, port, HandlerType.DB, bind_address, server_port, loop=loop)
+    asyncio.async(coro, loop=loop)
     # Serve requests until Ctrl+C is pressed
-    msg = ('Serving a Tango gateway to {0[0]} port {0[1]} '
-           'on {1[0]} port {1[1]} ...')
-    print(msg.format(loop.tango_host, server.sockets[0].getsockname()))
     try:
         loop.run_forever()
     except KeyboardInterrupt:

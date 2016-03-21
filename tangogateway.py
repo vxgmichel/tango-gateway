@@ -296,8 +296,6 @@ def read_zmq_frame(reader, bind_address, origin, debug=False):
         new_db = ':'.join((bind_address, loop.server_port)).encode()
     # Read frame
     body = yield from reader.read(4096)
-    if debug:
-        print(debug.center(len(debug) + 2).center(60, '#'))
     changes = []
     for index in find_all(body, b'tango://'):
         start = index-2 if origin == Origin.CLIENT else index-1
@@ -309,8 +307,6 @@ def read_zmq_frame(reader, bind_address, origin, debug=False):
         changes.append((start, stop, bytes([len(new_read)]) + new_read))
     # No changes
     if not changes:
-        print('No change:', body)
-        print()
         return body
     # Apply changes
     new_body, prev = b'', 0
@@ -319,9 +315,6 @@ def read_zmq_frame(reader, bind_address, origin, debug=False):
         prev = stop
     new_body += body[prev:]
     # Return
-    print('Old    :', body)
-    print('Changed:', new_body)
-    print()
     return new_body
 
 

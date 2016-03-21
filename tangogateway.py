@@ -6,6 +6,7 @@ import argparse
 from enum import Enum
 from functools import partial
 from contextlib import closing
+import aiozmq.rpc
 import struct
 
 try:
@@ -88,12 +89,20 @@ def start_forward(host, port, handler_type,
     # Start port forwarding
     func = handler_dict[handler_type]
     handler = partial(func, host=host, port=port)
-    server = yield from asyncio.start_server(
-        handler, bind_address, server_port, loop=loop)
-    value = (
-        server,
-        server.sockets[0].getsockname()[0],
-        server.sockets[0].getsockname()[1],)
+    if handler_type != HandlerType.ZMQ:
+        server = yield from asyncio.start_server(
+            handler, bind_address, server_port, loop=loop)
+        bind_address, server_port = server.sockets[0].getsockname()
+    else:
+        server_port = str(server_port) if server_port else '*'
+        bind = 'tcp://{}:{}'.format('194.47.253.49', server_port)
+        transport, proto = yield from zmq.create_zmq_connection(
+            lambda: zmq._ServerProtocol(loop),
+            zmq.PUB, bind=bind, loop=loop)
+        endpoint = list(transport.bindings())[0]
+        bind_address, server_port = endpoint.split('/')[-1].split(':')
+    # Make value
+    value = server, bind_address, server_port
     # Print message
     msg = "Forwarding {0} traffic on {1[0]} port {1[1]} to {2[0]} port {2[1]}"
     print(msg.format(handler_type.name, value[1:], (host, port)))
@@ -324,6 +333,33 @@ def read_zmq_frame(reader, bind_address, origin, debug=False):
     print()
     return new_body
 
+
+# New version
+
+
+@asyncio.coroutine
+def handle_zmq_client(client_reader, client_writer, host, port):
+    ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
+
+
+class ZmqHandler(aiozmq.rpc.AbstractHandler):
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+
+    def set_publisher(self, publisher):
+        self.publisher = publisher
+        asyncio.async(self.debug_loop())
+
+    @asyncio.coroutine
+    def debug_loop(self):
+        while True:
+            print(self.publisher)
+            print(dir(self.publisher))
+            yield from asyncio.sleep(1)
+
+    def __getitem__(self, key):
+        print(key)
 
 # Run server
 

@@ -98,7 +98,7 @@ def start_forward(host, port, handler_type,
     msg = "Forwarding {0} traffic on {1[0]} port {1[1]} to {2[0]} port {2[1]}"
     print(msg.format(handler_type.name, value[1:], (host, port)))
     # Set cache
-    loop.forward_dict[key].set(value)
+    loop.forward_dict[key].set_result(value)
     return value
 
 
@@ -119,9 +119,9 @@ def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # Unpack reply
     raw_reply_header, raw_body = raw_data[:12], raw_data[12:]
     reply_header = giop.unpack_reply_header(raw_reply_header)
-    if reply_header.reply_status != giop.ReplyStatus.NoException or \
-       header.order != giop.LITTLE_ENDIAN:
+    if reply_header.reply_status != giop.ReplyStatus.NoException:
         return raw_frame
+    assert giop.is_little_endian(header)
     # Patch body
     if patch == Patch.IOR:
         new_body = yield from check_ior(raw_body, bind_address, loop)
@@ -163,10 +163,6 @@ def handle_db_client(reader, writer, host, port):
                 reply = yield from read_giop_frame(
                     db_reader, bind_address, patch=patch)
                 writer.write(reply)
-                print(find_ports(reply))
-                if find_ports(reply):
-                    giop.print_bytes(reply)
-                    print(reply)
 
 
 @asyncio.coroutine
@@ -218,7 +214,6 @@ def handle_ds_client(reader, writer, host, port):
                     patch = Patch.ZMQ
                 else:
                     patch = Patch.NONE
-                print(patch)
                 # Read reply_header
                 reply = yield from read_giop_frame(
                     ds_reader, bind_address, patch=patch)
@@ -253,11 +248,12 @@ def check_zmq(raw_body, bind_address, loop):
 def handle_zmq_client(client_reader, client_writer, host, port):
     ds_reader, ds_writer = yield from asyncio.open_connection(host, port)
     # Debug
-    global CLIENT_COUNT
-    CLIENT_COUNT += 1
+    loop = client_reader._loop
+    loop.client_count += 1
     c_host, c_port = client_reader._transport._sock.getsockname()
     s_host, s_port = ds_reader._transport._sock.getpeername()
-    client = ':'.join((c_host, str(c_port))) + " <{}>".format(CLIENT_COUNT)
+    client = ':'.join((c_host, str(c_port)))
+    client += " <{}>".format(loop.client_count)
     server = ':'.join((s_host, str(s_port)))
     desc1 = client + ' -> ' + server
     desc2 = server + ' -> ' + client
@@ -272,14 +268,13 @@ def inspect_pipe(reader, writer, origin, debug=False):
     bind_address = writer._transport._sock.getsockname()[0]
     with closing(writer):
         while not reader.at_eof():
-            data = yield from read_zmq_frame(reader, bind_address, origin)
-            if debug and data:
-                print(debug.center(len(debug) + 2).center(60, '#'))
+            data = yield from read_zmq_frame(
+                reader, bind_address, origin, debug=debug)
             writer.write(data)
 
 
 @asyncio.coroutine
-def read_zmq_frame(reader, bind_address, origin):
+def read_zmq_frame(reader, bind_address, origin, debug=False):
     loop = reader._loop
     # Get new db
     if origin == Origin.CLIENT:
@@ -288,6 +283,8 @@ def read_zmq_frame(reader, bind_address, origin):
         new_db = ':'.join((bind_address, loop.server_port)).encode()
     # Read frame
     body = yield from reader.read(4096)
+    if debug:
+        print(debug.center(len(debug) + 2).center(60, '#'))
     changes = []
     for index in find_all(body, b'tango://'):
         start = index-2 if origin == Origin.CLIENT else index-1
@@ -299,6 +296,8 @@ def read_zmq_frame(reader, bind_address, origin):
         changes.append((start, stop, bytes([len(new_read)]) + new_read))
     # No changes
     if not changes:
+        print('No change:', body)
+        print()
         return body
     # Apply changes
     new_body, prev = b'', 0
@@ -307,6 +306,9 @@ def read_zmq_frame(reader, bind_address, origin):
         prev = stop
     new_body += body[prev:]
     # Return
+    print('Old    :', body)
+    print('Changed:', new_body)
+    print()
     return new_body
 
 
@@ -320,18 +322,20 @@ def run_server(bind_address, server_port, tango_host):
     loop.server_port = server_port
     loop.tango_host = tango_host
     loop.forward_dict = {}
+    loop.client_count = 0
     # Create server
     host, port = tango_host
     coro = start_forward(
         host, port, HandlerType.DB, bind_address, server_port, loop=loop)
-    asyncio.async(coro, loop=loop)
+    server, _, _ = loop.run_until_complete(coro)
     # Serve requests until Ctrl+C is pressed
     try:
         loop.run_forever()
     except KeyboardInterrupt:
         pass
     # Close all the servers
-    servers = [server for server, host, port in loop.forward_dict.values()]
+    servers = [fut.result()[0] for fut in loop.forward_dict.values()
+               if fut.done() and not fut.exception()]
     servers.append(server)
     for server in servers:
         server.close()

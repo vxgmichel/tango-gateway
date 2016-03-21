@@ -8,7 +8,6 @@ from collections import namedtuple
 
 MAGIC_GIOP = b'GIOP'
 MAGIC_IOR = b'IOR:'
-LITTLE_ENDIAN = 1
 GIOP_HEADER_STRUCT = '4sBBBBI'
 REPLY_HEADER_STRUCT = 'III'
 IOR_STRUCT_1 = 'II'
@@ -44,6 +43,11 @@ class ReplyStatus(IntEnum):
     LocationForward = 3
 
 
+class Endian(IntEnum):
+    Big = 0
+    Little = 1
+
+
 # Helpers
 
 def print_bytes(string):
@@ -57,7 +61,7 @@ def print_bytes(string):
 
 GiopHeader = namedtuple(
     'GiopHeader',
-    'giop major minor order message_type size')
+    'giop major minor flags message_type size')
 
 ReplyHeader = namedtuple(
     'ReplyHeader',
@@ -88,7 +92,7 @@ def unpack_giop_header(bytes_header):
     assert header.major == 1
     assert header.minor in range(3)
     MessageType(header.message_type)
-    order = '<' if header.order == LITTLE_ENDIAN else '>'
+    order = '<' if is_little_endian(header) else '>'
     values = struct.unpack(order + GIOP_HEADER_STRUCT, bytes_header)
     return GiopHeader(*values)
 
@@ -97,6 +101,10 @@ def pack_giop(header, body):
     values = (MAGIC_GIOP,) + header[1:-1] + (len(body),)
     bytes_header = struct.pack(GIOP_HEADER_STRUCT, *values)
     return bytes_header + body
+
+
+def is_little_endian(header):
+    return header.flags % 2 == Endian.Little
 
 
 # Reply helpers

@@ -34,7 +34,7 @@ class Origin(Enum):
 
 
 CLIENT_COUNT = 0
-CHECK_PORTS = []
+CHECK_PORTS = []  # Fill up for debugging purposes
 IMPORT_DEVICE = b'DbImportDevice'
 GET_CSDB_SERVER = b'DbGetCSDbServerList'
 ZMQ_SUBSCRIPTION_CHANGE = b'ZmqEventSubscriptionChange'
@@ -55,6 +55,8 @@ def find_port(port, frame):
                for x in [port_str, port_byte, ascii_str, ascii_byte])
 
 
+# String helper
+
 def find_all(string, sub):
     start = 0
     while True:
@@ -65,52 +67,7 @@ def find_all(string, sub):
         start += len(sub)
 
 
-@asyncio.coroutine
-def inspect_pipe(reader, writer, origin, debug=False):
-    bind_address = writer._transport._sock.getsockname()[0]
-    with closing(writer):
-        while not reader.at_eof():
-            data = yield from read_zmq_frame(reader, bind_address, origin)
-            if debug and data:
-                print(debug.center(len(debug) + 2).center(60, '#'))
-                # print(find_ports(data))
-                # giop.print_bytes(data)
-            writer.write(data)
-
-
-@asyncio.coroutine
-def read_zmq_frame(reader, bind_address, origin):
-    loop = reader._loop
-    # Get new db
-    if origin == Origin.CLIENT:
-        new_db = ':'.join(loop.tango_host).encode()
-    else:
-        new_db = ':'.join((bind_address, loop.server_port)).encode()
-    # Read frame
-    body = yield from reader.read(4096)
-    changes = []
-    for index in find_all(body, b'tango://'):
-        start = index-2 if origin == Origin.CLIENT else index-1
-        size = body[start]
-        stop = index+size-1
-        read = body[start+1:stop]
-        prot, empty, db, *device = read.split(b'/')
-        new_read = b'/'.join((prot, empty, new_db) + tuple(device))
-        changes.append((start, stop, bytes([len(new_read)]) + new_read))
-    # No changes
-    if not changes:
-        return body
-    # Apply changes
-    new_body, prev = b'', 0
-    for start, stop, change in changes:
-        new_body += body[prev:start] + change
-        prev = stop
-    new_body += body[prev:]
-    # Return
-    print(body)
-    print(new_body)
-    return new_body
-
+# Coroutine helpers
 
 @asyncio.coroutine
 def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
@@ -148,6 +105,57 @@ def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
 
 
 @asyncio.coroutine
+def start_forward(host, port, bind_address, handler_type, loop):
+    handler_dict = {
+        HandlerType.DS: handle_ds_client,
+        HandlerType.ZMQ: handle_zmq_client}
+    # Start port forwarding
+    func = handler_dict[handler_type]
+    handler = partial(func, host=host, port=port)
+    server = yield from asyncio.start_server(
+        handler, bind_address, 0, loop=loop)
+    value = (
+        server,
+        server.sockets[0].getsockname()[0],
+        server.sockets[0].getsockname()[1],)
+    msg = "Forwarding {0[0]} port {0[1]} to {1[0]} port {1[1]}..."
+    print(msg.format(value[1:], (host, port)))
+    return value
+
+
+# Inspect DB traffic
+
+@asyncio.coroutine
+def handle_db_client(reader, writer, host, port):
+    with closing(writer):
+        bind_address = writer._transport._sock.getsockname()[0]
+        db_reader, db_writer = yield from asyncio.open_connection(
+            host, port, loop=reader._loop)
+        with closing(db_writer):
+            while not reader.at_eof() and not db_reader.at_eof():
+                # Read request
+                request = yield from read_giop_frame(reader, bind_address)
+                if not request:
+                    break
+                db_writer.write(request)
+                # Choose patch
+                if IMPORT_DEVICE in request:
+                    patch = Patch.IOR
+                elif GET_CSDB_SERVER in request:
+                    patch = Patch.CSD
+                else:
+                    patch = Patch.NONE
+                # Read reply_header
+                reply = yield from read_giop_frame(
+                    db_reader, bind_address, patch=patch)
+                writer.write(reply)
+                print(find_ports(reply))
+                if find_ports(reply):
+                    giop.print_bytes(reply)
+                    print(reply)
+
+
+@asyncio.coroutine
 def check_ior(raw_body, bind_address, loop):
     # Find IOR, host and port
     ior = giop.find_ior(raw_body)
@@ -166,6 +174,44 @@ def check_ior(raw_body, bind_address, loop):
     ior = ior._replace(host=host.encode() + giop.STRING_TERM, port=port)
     # Repack body
     return giop.repack_ior(raw_body, ior, start, stop)
+
+
+@asyncio.coroutine
+def check_csd(raw_body, bind_address, loop):
+    csd = giop.find_csd(raw_body)
+    if not csd:
+        return False
+    csd, start = csd
+    new_csd = ':'.join((bind_address, loop.server_port))
+    new_csd = new_csd.encode() + giop.STRING_TERM
+    return giop.repack_csd(raw_body, new_csd, start)
+
+
+# Inspect DS traffic
+
+@asyncio.coroutine
+def handle_ds_client(reader, writer, host, port):
+    with closing(writer):
+        bind_address = writer._transport._sock.getsockname()[0]
+        ds_reader, ds_writer = yield from asyncio.open_connection(
+            host, port, loop=reader._loop)
+        with closing(ds_writer):
+            while not reader.at_eof() and not ds_reader.at_eof():
+                # Read request
+                request = yield from read_giop_frame(reader, bind_address)
+                if not request:
+                    break
+                ds_writer.write(request)
+                # Choose patch
+                if ZMQ_SUBSCRIPTION_CHANGE in request:
+                    patch = Patch.ZMQ
+                else:
+                    patch = Patch.NONE
+                print(patch)
+                # Read reply_header
+                reply = yield from read_giop_frame(
+                    ds_reader, bind_address, patch=patch)
+                writer.write(reply)
 
 
 @asyncio.coroutine
@@ -193,85 +239,7 @@ def check_zmq(raw_body, bind_address, loop):
     return giop.repack_zmq_endpoints(raw_body, zmq1, zmq2, start)
 
 
-@asyncio.coroutine
-def check_csd(raw_body, bind_address, loop):
-    csd = giop.find_csd(raw_body)
-    if not csd:
-        return False
-    csd, start = csd
-    new_csd = ':'.join((bind_address, loop.server_port))
-    new_csd = new_csd.encode() + giop.STRING_TERM
-    return giop.repack_csd(raw_body, new_csd, start)
-
-
-@asyncio.coroutine
-def start_forward(host, port, bind_address, handler_type, loop):
-    handler_dict = {
-        HandlerType.DS: handle_ds_client,
-        HandlerType.ZMQ: handle_zmq_client}
-    # Start port forwarding
-    func = handler_dict[handler_type]
-    handler = partial(func, host=host, port=port)
-    server = yield from asyncio.start_server(
-        handler, bind_address, 0, loop=loop)
-    value = (
-        server,
-        server.sockets[0].getsockname()[0],
-        server.sockets[0].getsockname()[1],)
-    msg = "Forwarding {0[0]} port {0[1]} to {1[0]} port {1[1]}..."
-    print(msg.format(value[1:], (host, port)))
-    return value
-
-
-@asyncio.coroutine
-def handle_db_client(reader, writer, host, port):
-    with closing(writer):
-        bind_address = writer._transport._sock.getsockname()[0]
-        db_reader, db_writer = yield from asyncio.open_connection(
-            host, port, loop=reader._loop)
-        with closing(db_writer):
-            while not reader.at_eof() and not db_reader.at_eof():
-                # Read request
-                request = yield from read_giop_frame(reader, bind_address)
-                if not request:
-                    break
-                db_writer.write(request)
-                # Choose patch
-                if IMPORT_DEVICE in request:
-                    patch = Patch.IOR
-                elif GET_CSDB_SERVER in request:
-                    patch = Patch.CSD
-                else:
-                    patch = Patch.NONE
-                # Read reply_header
-                reply = yield from read_giop_frame(
-                    db_reader, bind_address, patch=patch)
-                writer.write(reply)
-
-
-@asyncio.coroutine
-def handle_ds_client(reader, writer, host, port):
-    with closing(writer):
-        bind_address = writer._transport._sock.getsockname()[0]
-        ds_reader, ds_writer = yield from asyncio.open_connection(
-            host, port, loop=reader._loop)
-        with closing(ds_writer):
-            while not reader.at_eof() and not ds_reader.at_eof():
-                # Read request
-                request = yield from read_giop_frame(reader, bind_address)
-                if not request:
-                    break
-                ds_writer.write(request)
-                # Choose patch
-                if ZMQ_SUBSCRIPTION_CHANGE in request:
-                    patch = Patch.ZMQ
-                else:
-                    patch = Patch.NONE
-                # Read reply_header
-                reply = yield from read_giop_frame(
-                    ds_reader, bind_address, patch=patch)
-                writer.write(reply)
-
+# Inspect ZMQ traffic
 
 @asyncio.coroutine
 def handle_zmq_client(client_reader, client_writer, host, port):
@@ -290,6 +258,51 @@ def handle_zmq_client(client_reader, client_writer, host, port):
     task2 = inspect_pipe(ds_reader, client_writer, Origin.DS, debug=desc2)
     yield from asyncio.gather(task1, task2)
 
+
+@asyncio.coroutine
+def inspect_pipe(reader, writer, origin, debug=False):
+    bind_address = writer._transport._sock.getsockname()[0]
+    with closing(writer):
+        while not reader.at_eof():
+            data = yield from read_zmq_frame(reader, bind_address, origin)
+            if debug and data:
+                print(debug.center(len(debug) + 2).center(60, '#'))
+            writer.write(data)
+
+
+@asyncio.coroutine
+def read_zmq_frame(reader, bind_address, origin):
+    loop = reader._loop
+    # Get new db
+    if origin == Origin.CLIENT:
+        new_db = ':'.join(map(str, loop.tango_host)).encode()
+    else:
+        new_db = ':'.join((bind_address, loop.server_port)).encode()
+    # Read frame
+    body = yield from reader.read(4096)
+    changes = []
+    for index in find_all(body, b'tango://'):
+        start = index-2 if origin == Origin.CLIENT else index-1
+        size = body[start]
+        stop = index+size-1
+        read = body[start+1:stop]
+        prot, empty, db, *device = read.split(b'/')
+        new_read = b'/'.join((prot, empty, new_db) + tuple(device))
+        changes.append((start, stop, bytes([len(new_read)]) + new_read))
+    # No changes
+    if not changes:
+        return body
+    # Apply changes
+    new_body, prev = b'', 0
+    for start, stop, change in changes:
+        new_body += body[prev:start] + change
+        prev = stop
+    new_body += body[prev:]
+    # Return
+    return new_body
+
+
+# Run server
 
 def run_server(bind_address, server_port, tango_host):
     """Run a Tango gateway server."""

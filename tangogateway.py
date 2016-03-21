@@ -99,7 +99,7 @@ def read_zmq_frame(reader, bind_address, origin):
         changes.append((start, stop, bytes([len(new_read)]) + new_read))
     # No changes
     if not changes:
-        return body 
+        return body
     # Apply changes
     new_body, prev = b'', 0
     for start, stop, change in changes:
@@ -114,19 +114,16 @@ def read_zmq_frame(reader, bind_address, origin):
 
 @asyncio.coroutine
 def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
-    # No patch
-    if patch in (Patch.NONE,):
-        return (yield from reader.read(4096))
     # Read header
     loop = reader._loop
-    raw_header = yield from reader.read(12)
+    raw_header = yield from reader.readexactly(12)
     if not raw_header or not raw_header.startswith(giop.MAGIC_GIOP):
         return raw_header
     header = giop.unpack_giop_header(raw_header)
     # Read data
-    raw_data = yield from reader.read(header.size)
+    raw_data = yield from reader.readexactly(header.size)
     raw_frame = raw_header + raw_data
-    if header.message_type != giop.MessageType.Reply:
+    if header.message_type != giop.MessageType.Reply or patch == Patch.NONE:
         return raw_frame
     # Unpack reply
     raw_reply_header, raw_body = raw_data[:12], raw_data[12:]

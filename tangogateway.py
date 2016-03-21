@@ -116,9 +116,10 @@ def read_zmq_frame(reader, bind_address, origin):
 def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
     # Read header
     loop = reader._loop
-    raw_header = yield from reader.readexactly(12)
-    if not raw_header or not raw_header.startswith(giop.MAGIC_GIOP):
-        return raw_header
+    try:
+        raw_header = yield from reader.readexactly(12)
+    except asyncio.IncompleteReadError:
+        return b''
     header = giop.unpack_giop_header(raw_header)
     # Read data
     raw_data = yield from reader.readexactly(header.size)

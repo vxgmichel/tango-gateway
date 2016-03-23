@@ -377,7 +377,7 @@ def main(*args):
     parser.add_argument('--bind', '-b', metavar='ADDRESS', default='0.0.0.0',
                         help='Specify the bind address '
                         '(default is all interfaces)')
-    parser.add_argument('--port', '-p', metavar='PORT', default=8000,
+    parser.add_argument('--port', '-p', metavar='PORT', default=8000, type=int,
                         help='Port for the server (default is 8000)')
     parser.add_argument('--tango', '-t', metavar='HOST',
                         help='Tango host (default is given by PyTango)')

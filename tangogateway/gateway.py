@@ -1,15 +1,18 @@
 """Provide a Tango gateway server."""
 
-import giop
+# Imports
 import socket
 import asyncio
 import argparse
 from enum import Enum
 from functools import partial
 from contextlib import closing
-import zmqforward
-import struct
 
+# Local imports
+from . import giop
+from . import zmqforward
+
+# Optional imports
 try:
     import PyTango
 except ImportError:

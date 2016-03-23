@@ -327,7 +327,7 @@ def check_zmq(raw_body, bind_address, loop):
 
 # Run server
 
-def run_server(bind_address, server_port, tango_host):
+def run_gateway_server(bind_address, server_port, tango_host):
     """Run a Tango gateway server."""
     # Initialize loop
     loop = asyncio.get_event_loop()
@@ -398,7 +398,7 @@ def main(*args):
             db = PyTango.Database()
         namespace.tango = db.get_db_host(), int(db.get_db_port())
     # Run the server
-    return run_server(namespace.bind, namespace.port, namespace.tango)
+    return run_gateway_server(namespace.bind, namespace.port, namespace.tango)
 
 
 if __name__ == '__main__':

@@ -15,8 +15,8 @@ Requirements
 Usage
 -----
 
-```bash
- $ python3 -m tangogateway --help
+```
+$ python3 -m tangogateway --help
 usage: tangogateway [-h] [--bind ADDRESS] [--port PORT] [--tango HOST]
 
 Run a Tango gateway server
@@ -28,7 +28,6 @@ optional arguments:
   --port PORT, -p PORT  Port for the server (default is 8000)
   --tango HOST, -t HOST
                         Tango host (default is given by PyTango)
-
 ```
 
 Contact

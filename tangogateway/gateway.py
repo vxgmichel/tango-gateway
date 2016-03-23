@@ -373,14 +373,18 @@ def run_gateway_server(bind_address, server_port, tango_host):
 def main(*args):
     """Run a Tango gateway server from CLI arguments."""
     # Create parser
-    parser = argparse.ArgumentParser(description='Run a Tango gateway server.')
-    parser.add_argument('--bind', '-b', metavar='ADDRESS', default='0.0.0.0',
-                        help='Specify the bind address '
-                        '(default is all interfaces)')
-    parser.add_argument('--port', '-p', metavar='PORT', default=8000, type=int,
-                        help='Port for the server (default is 8000)')
-    parser.add_argument('--tango', '-t', metavar='HOST',
-                        help='Tango host (default is given by PyTango)')
+    parser = argparse.ArgumentParser(
+        prog='tangogateway',
+        description='Run a Tango gateway server')
+    parser.add_argument(
+        '--bind', '-b', metavar='ADDRESS', default='0.0.0.0',
+        help='Specify the bind address (default is all interfaces)')
+    parser.add_argument(
+        '--port', '-p', metavar='PORT', default=8000, type=int,
+        help='Port for the server (default is 8000)')
+    parser.add_argument(
+        '--tango', '-t', metavar='HOST',
+        help='Tango host (default is given by PyTango)')
     # Parse arguments
     namespace = parser.parse_args(*args)
     # Check Tango database

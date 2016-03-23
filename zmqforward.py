@@ -18,12 +18,15 @@ class BaseProtocol(aiozmq.ZmqProtocol):
     def __init__(self, handler):
         self.handler = handler
         self.transport = None
+        self.wait_closed = None
 
     def connection_made(self, transport):
         self.transport = transport
+        self.wait_closed = asyncio.Future(loop=transport._loop)
 
     def connection_lost(self, exc):
         self.handler.connection_lost(exc)
+        self.wait_closed.set_result(exc)
         self.transport = None
 
 
@@ -115,7 +118,10 @@ class ForwardingHandler:
 
     @asyncio.coroutine
     def wait_closed(self):
-        yield
+        if self.publisher.wait_closed:
+            yield from self.publisher.wait_closed
+        if self.subscriber.wait_closed:
+            yield from self.subscriber.wait_closed
 
 
 @asyncio.coroutine

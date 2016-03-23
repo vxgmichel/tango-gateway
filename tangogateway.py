@@ -1,6 +1,7 @@
 """Provide a Tango gateway server."""
 
 import giop
+import socket
 import asyncio
 import argparse
 from enum import Enum
@@ -53,61 +54,28 @@ def find_all(string, sub):
 def make_translater(sub, pub):
     sub = ':'.join(map(str, sub)).encode()
     pub = ':'.join(map(str, pub)).encode()
-
-    def translate(value, reverse=False):
-        return value.replace(pub, sub) if reverse else value.replace(sub, pub)
-
-    return translate
+    args = (sub, pub), (pub, sub)
+    return lambda value, reverse=False: value.replace(*args[reverse])
 
 
 # Coroutine helpers
 
 @asyncio.coroutine
-def get_forwarding(host, port, handler_type,
-                   bind_address='0.0.0.0', server_port=0, loop=None):
-    if loop is None:
-        loop = asyncio.get_event_loop()
-    # Check cache
-    key = host, port, bind_address
-    if key in loop.forward_dict:
-        return (yield from loop.forward_dict[key])
-    loop.forward_dict[key] = asyncio.Future(loop=loop)
-    # Start forwarding
-    value = yield from start_forwarding(
-        host, port, handler_type, bind_address, server_port, loop)
-    loop.forward_dict[key].set_result(value)
-    # Print and return
-    msg = "Forwarding {0} traffic on {1[0]} port {1[1]} to {2[0]} port {2[1]}"
-    print(msg.format(handler_type.name, value[1:], (host, port)))
-    return value
-
-
-@asyncio.coroutine
-def start_forwarding(host, port, handler_type,
-                     bind_address='0.0.0.0', server_port=0, loop=None):
-    if loop is None:
-        loop = asyncio.get_event_loop()
-    # GIOP handler
-    if handler_type != HandlerType.ZMQ:
-        # Make handler
-        handler_dict = {
-            HandlerType.DB: handle_db_client,
-            HandlerType.DS: handle_ds_client}
-        handler = partial(handler_dict[handler_type], host=host, port=port)
-        # Start server
-        server = yield from asyncio.start_server(
-            handler, bind_address, server_port, loop=loop)
-        bind_address, server_port = server.sockets[0].getsockname()
-        return server, bind_address, server_port
-    # ZMQ handler
-    else:
-        # Make translater
-        address = bind_address, loop.server_port
-        translater = make_translater(address, loop.tango_host)
-        # Start server
-        coro = zmqforward.pubsub_forwarding(
-            host, port, translater, bind_address, server_port, loop=loop)
-        return (yield from coro)
+def get_connection(key, loop, only_check=False):
+    host, port, _ = key
+    # Try to connect
+    try:
+        reader, writer = yield from asyncio.open_connection(
+            host, port, loop=loop)
+    # Connection broken
+    except ConnectionRefusedError:
+        print("Could not connect to {} port {}".format(host, port))
+        yield from stop_forwarding(key, loop)
+        return False
+    # Connection OK
+    if not only_check:
+        return reader, writer
+    return True
 
 
 @asyncio.coroutine
@@ -119,6 +87,88 @@ def get_host_name(stream, resolve=True):
     name_info = yield from loop.getnameinfo(sock.getsockname())
     return name_info[0]
 
+
+@asyncio.coroutine
+def check_servers(loop, period=10.):
+    while True:
+        yield from asyncio.sleep(period)
+        for key in list(loop.forward_dict):
+            yield from get_connection(key, loop, only_check=True)
+
+
+# Forwarding helpers
+
+@asyncio.coroutine
+def get_forwarding(host, port, handler_type,
+                   bind_address='0.0.0.0', server_port=0, loop=None):
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    # Check connection
+    key = host, port, bind_address
+    if not (yield from get_connection(key, loop, only_check=False)):
+        return None, bind_address, loop.bound_port
+    # Check cache
+    if key in loop.forward_dict:
+        return (yield from loop.forward_dict[key])
+    loop.forward_dict[key] = asyncio.Future(loop=loop)
+    # Start forwarding
+    value = yield from start_forwarding(
+        host, port, handler_type, bind_address, server_port, loop)
+    # Set cache
+    loop.forward_dict[key].set_result(value)
+    return value
+
+
+@asyncio.coroutine
+def start_forwarding(host, port, handler_type,
+                     bind_address='0.0.0.0', server_port=0, loop=None):
+    if loop is None:
+        loop = asyncio.get_event_loop()
+    # GIOP handler
+    if handler_type != HandlerType.ZMQ:
+        # Make handler
+        key = host, port, bind_address
+        handler_dict = {
+            HandlerType.DB: handle_db_client,
+            HandlerType.DS: handle_ds_client}
+        handler = partial(handler_dict[handler_type], key=key)
+        # Start server
+        server = yield from asyncio.start_server(
+            handler, bind_address, server_port, loop=loop)
+        bind_address, server_port = server.sockets[0].getsockname()
+    # ZMQ handler
+    else:
+        # Make translater
+        address = bind_address, loop.server_port
+        translater = make_translater(address, loop.tango_host)
+        # Start server
+        coro = zmqforward.pubsub_forwarding(
+            host, port, translater, bind_address, server_port, loop=loop)
+        server, bind_address, server_port = yield from coro
+    # Print and return
+    msg = "Forwarding {} traffic on {} port {} to {} port {}"
+    print(msg.format(handler_type.name, bind_address, server_port, host, port))
+    return server, bind_address, server_port
+
+
+@asyncio.coroutine
+def stop_forwarding(key, loop):
+    # Get server
+    if key not in loop.forward_dict or \
+       not loop.forward_dict[key].done() or \
+       loop.forward_dict[key].exception():
+        return
+    server, bind_address, server_port = loop.forward_dict.pop(key).result()
+    # Close server
+    server.close()
+    yield from server.wait_closed()
+    # Print
+    host, port, _ = key
+    msg = "Stopped forwarding traffic on {} port {} to {} port {}"
+    print(msg.format(bind_address, server_port, host, port))
+
+
+# Frame helper
 
 @asyncio.coroutine
 def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
@@ -158,12 +208,16 @@ def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
 # Inspect DB traffic
 
 @asyncio.coroutine
-def handle_db_client(reader, writer, host, port):
+def handle_db_client(reader, writer, key):
     with closing(writer):
+        loop = reader._loop
         bind_address = yield from get_host_name(writer)
         # Connect to client
-        db_reader, db_writer = yield from asyncio.open_connection(
-            host, port, loop=reader._loop)
+        connection = yield from get_connection(key, loop)
+        if not connection:
+            return
+        db_reader, db_writer = connection
+        # Loop over reply/requests
         with closing(db_writer):
             while not reader.at_eof() and not db_reader.at_eof():
                 # Read request
@@ -209,7 +263,7 @@ def check_csd(raw_body, bind_address, loop):
     if not csd:
         return False
     csd, start = csd
-    new_csd = ':'.join((bind_address, loop.server_port))
+    new_csd = ':'.join((bind_address, str(loop.server_port)))
     new_csd = giop.to_byte_string(new_csd)
     return giop.repack_csd(raw_body, new_csd, start)
 
@@ -217,12 +271,16 @@ def check_csd(raw_body, bind_address, loop):
 # Inspect DS traffic
 
 @asyncio.coroutine
-def handle_ds_client(reader, writer, host, port):
+def handle_ds_client(reader, writer, key):
     with closing(writer):
+        loop = reader._loop
         bind_address = yield from get_host_name(writer)
         # Connect to client
-        ds_reader, ds_writer = yield from asyncio.open_connection(
-            host, port, loop=reader._loop)
+        connection = yield from get_connection(key, loop)
+        if not connection:
+            return
+        ds_reader, ds_writer = connection
+        # Loop over reply/requests
         with closing(ds_writer):
             while not reader.at_eof() and not ds_reader.at_eof():
                 # Read request
@@ -274,7 +332,10 @@ def run_server(bind_address, server_port, tango_host):
     loop.server_port = server_port
     loop.tango_host = tango_host
     loop.forward_dict = {}
-    loop.client_count = 0
+    # Create locked
+    loop.bound_socket = socket.socket()
+    loop.bound_socket.bind((bind_address, 0))
+    loop.bound_port = loop.bound_socket.getsockname()[1]
     # Create server
     host, port = tango_host
     coro = get_forwarding(
@@ -282,9 +343,10 @@ def run_server(bind_address, server_port, tango_host):
     server, _, _ = loop.run_until_complete(coro)
     # Serve requests until Ctrl+C is pressed
     try:
+        future = asyncio.ensure_future(check_servers(loop))
         loop.run_forever()
     except KeyboardInterrupt:
-        pass
+        future.cancel()
     # Close all the servers
     servers = [fut.result()[0]
                for fut in loop.forward_dict.values()

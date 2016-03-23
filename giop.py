@@ -48,15 +48,6 @@ class Endian(IntEnum):
     Little = 1
 
 
-# Helpers
-
-def print_bytes(string):
-    print('Bytes (len={:d}):'.format(len(string)))
-    for x in range(0, len(string), 8):
-        a = str(string[x:x+4])[2:-1]
-        b = str(string[x+4:x+8])[2:-1]
-        print('... {:<4d}: {:16s} {:16s}'.format(x, a, b))
-
 # Structures
 
 GiopHeader = namedtuple(
@@ -71,6 +62,25 @@ IOR = namedtuple(
     'IOR',
     'first dtype_length dtype nb_profile tag '
     'length major minor wtf host_length host port body')
+
+
+# Helpers
+
+def print_bytes(string):
+    print('Bytes (len={:d}):'.format(len(string)))
+    for x in range(0, len(string), 8):
+        a = str(string[x:x+4])[2:-1]
+        b = str(string[x+4:x+8])[2:-1]
+        print('... {:<4d}: {:16s} {:16s}'.format(x, a, b))
+
+
+def to_byte_string(string):
+    return string.encode() + STRING_TERM
+
+
+def from_byte_string(string):
+    assert string[-1:] == STRING_TERM
+    return string[:-1].decode()
 
 
 # ASCII/bytes helpers

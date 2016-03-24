@@ -174,24 +174,36 @@ def stop_forwarding(key, loop):
 # Frame helper
 
 @asyncio.coroutine
-def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
+def forward_giop_frame(reader, writer, bind_address, patch=Patch.NONE):
+    last = False
+    while not last:
+        last, fragment = yield from read_giop_fragment(
+            reader, bind_address, patch)
+        if fragment:
+            writer.write(fragment)
+    return fragment
+
+
+@asyncio.coroutine
+def read_giop_fragment(reader, bind_address, patch=Patch.NONE):
     # Read header
     loop = reader._loop
     try:
         raw_header = yield from reader.readexactly(12)
     except asyncio.IncompleteReadError:
-        return b''
+        return True, b''
     header = giop.unpack_giop_header(raw_header)
+    last = giop.is_last_fragment(header)
     # Read data
     raw_data = yield from reader.readexactly(header.size)
     raw_frame = raw_header + raw_data
     if header.message_type != giop.MessageType.Reply or patch == Patch.NONE:
-        return raw_frame
+        return last, raw_frame
     # Unpack reply
     raw_reply_header, raw_body = raw_data[:12], raw_data[12:]
     reply_header = giop.unpack_reply_header(raw_reply_header)
     if reply_header.reply_status != giop.ReplyStatus.NoException:
-        return raw_frame
+        return last, raw_frame
     assert giop.is_little_endian(header)
     # Patch body
     if patch == Patch.IOR:
@@ -202,10 +214,10 @@ def read_giop_frame(reader, bind_address, patch=Patch.NONE, debug=False):
         new_body = yield from check_csd(raw_body, bind_address, loop)
     # Ignore
     if not new_body:
-        return raw_frame
+        return last, raw_frame
     # Repack frame
     raw_data = raw_reply_header + new_body
-    return giop.pack_giop(header, raw_data)
+    return last, giop.pack_giop(header, raw_data)
 
 
 # Inspect DB traffic
@@ -224,10 +236,10 @@ def handle_db_client(reader, writer, key):
         with closing(db_writer):
             while not reader.at_eof() and not db_reader.at_eof():
                 # Read request
-                request = yield from read_giop_frame(reader, bind_address)
+                request = yield from forward_giop_frame(
+                    reader, db_writer, bind_address)
                 if not request:
                     break
-                db_writer.write(request)
                 # Choose patch
                 if IMPORT_DEVICE in request:
                     patch = Patch.IOR
@@ -236,9 +248,8 @@ def handle_db_client(reader, writer, key):
                 else:
                     patch = Patch.NONE
                 # Read reply_header
-                reply = yield from read_giop_frame(
-                    db_reader, bind_address, patch=patch)
-                writer.write(reply)
+                reply = yield from forward_giop_frame(
+                    db_reader, writer, bind_address, patch=patch)
 
 
 @asyncio.coroutine
@@ -287,19 +298,18 @@ def handle_ds_client(reader, writer, key):
         with closing(ds_writer):
             while not reader.at_eof() and not ds_reader.at_eof():
                 # Read request
-                request = yield from read_giop_frame(reader, bind_address)
+                request = yield from forward_giop_frame(
+                    reader, ds_writer, bind_address)
                 if not request:
                     break
-                ds_writer.write(request)
                 # Choose patch
                 if ZMQ_SUBSCRIPTION_CHANGE in request:
                     patch = Patch.ZMQ
                 else:
                     patch = Patch.NONE
                 # Read reply_header
-                reply = yield from read_giop_frame(
-                    ds_reader, bind_address, patch=patch)
-                writer.write(reply)
+                reply = yield from forward_giop_frame(
+                    ds_reader, writer, bind_address, patch=patch)
 
 
 @asyncio.coroutine

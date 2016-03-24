@@ -117,6 +117,10 @@ def is_little_endian(header):
     return header.flags % 2 == Endian.Little
 
 
+def is_last_fragment(header):
+    return not (header.flags >> 1) % 2
+
+
 # Reply helpers
 
 def unpack_reply_header(bytes_header):

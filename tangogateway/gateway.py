@@ -78,6 +78,7 @@ def get_connection(key, loop, only_check=False):
     # Connection OK
     if not only_check:
         return reader, writer
+    writer.close()
     return True
 
 

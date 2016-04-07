@@ -357,10 +357,10 @@ def run_gateway_server(bind_address, server_port, tango_host):
     server, _, _ = loop.run_until_complete(coro)
     # Serve requests until Ctrl+C is pressed
     try:
-        future = asyncio.ensure_future(check_servers(loop))
+        check_task = loop.create_task(check_servers(loop))
         loop.run_forever()
     except KeyboardInterrupt:
-        future.cancel()
+        check_task.cancel()
     # Close all the servers
     servers = [fut.result()[0]
                for fut in loop.forward_dict.values()

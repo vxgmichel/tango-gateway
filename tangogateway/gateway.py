@@ -109,7 +109,7 @@ def get_forwarding(host, port, handler_type,
         loop = asyncio.get_event_loop()
     # Check connection
     key = host, port, bind_address
-    if not (yield from get_connection(key, loop, only_check=False)):
+    if not (yield from get_connection(key, loop, only_check=True)):
         return None, bind_address, loop.bound_port
     # Check cache
     if key in loop.forward_dict:

@@ -138,7 +138,8 @@ def start_forwarding(host, port, handler_type,
         handler = partial(handler_dict[handler_type], key=key)
         # Start server
         server = yield from asyncio.start_server(
-            handler, bind_address, server_port, loop=loop)
+            handler, bind_address, server_port,
+            family=socket.AF_INET, loop=loop)
         bind_address, server_port = server.sockets[0].getsockname()
     # ZMQ handler
     else:

@@ -13,7 +13,7 @@ def safe_read(fname):
 
 # Setup
 setup(name="python-tangogateway",
-      version="0.1.0",
+      version="0.1.1",
       packages=['tangogateway'],
       entry_points={
           'console_scripts': ['TangoGateway = tangogateway:main']},

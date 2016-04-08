@@ -1,8 +1,8 @@
-python-tangogateway
-===================
-***
+tango-gateway
+=============
 
-A Tango gateaway server
+A Tango gateway server
+
 
 Requirements
 ------------
@@ -12,12 +12,13 @@ Requirements
 - aiozmq
 - pytango (optional)
 
+
 Usage
 -----
 
 ```
-$ python3 -m tangogateway --help
-usage: tangogateway [-h] [--bind ADDRESS] [--port PORT] [--tango HOST]
+$ tango-gateway -h
+usage: tango-gateway [-h] [--bind ADDRESS] [--port PORT] [--tango HOST]
 
 Run a Tango gateway server
 
@@ -29,6 +30,7 @@ optional arguments:
   --tango HOST, -t HOST
                         Tango host (default is given by PyTango)
 ```
+
 
 Contact
 -------

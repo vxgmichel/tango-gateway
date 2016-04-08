@@ -12,11 +12,11 @@ def safe_read(fname):
         return ""
 
 # Setup
-setup(name="python-tangogateway",
+setup(name="tango-gateway",
       version="0.1.4",
       packages=['tangogateway'],
       entry_points={
-          'console_scripts': ['TangoGateway = tangogateway:main']},
+          'console_scripts': ['tango-gateway = tangogateway:main']},
 
       license="GPLv3",
       install_requires=['aiozmq'],

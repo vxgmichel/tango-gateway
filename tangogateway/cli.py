@@ -15,7 +15,7 @@ def main(*args):
     """Run a Tango gateway server from CLI arguments."""
     # Create parser
     parser = argparse.ArgumentParser(
-        prog='tangogateway',
+        prog='tango-gateway',
         description='Run a Tango gateway server')
     parser.add_argument(
         '--bind', '-b', metavar='ADDRESS', default='0.0.0.0',

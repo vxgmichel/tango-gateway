@@ -3,6 +3,11 @@ tango-gateway
 
 A Tango gateway server
 
+Clients from other networks can connect to the gateway to access the tango
+database transparently. It opens ports dynamically when an access to a device
+is required and redirects the traffic to the corresponding device. The ZMQ
+tango events are also supported.
+
 
 Requirements
 ------------

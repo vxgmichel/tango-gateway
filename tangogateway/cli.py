@@ -26,6 +26,7 @@ def main(*args):
     parser.add_argument(
         '--tango', '-t', metavar='HOST',
         help='Tango host (default is given by PyTango)')
+    parser.add_argument('--verbose', '-v', action='store_true')
     # Parse arguments
     namespace = parser.parse_args(*args)
     # Check Tango database
@@ -43,7 +44,10 @@ def main(*args):
             db = PyTango.Database()
         namespace.tango = db.get_db_host(), int(db.get_db_port())
     # Run the server
-    return run_gateway_server(namespace.bind, namespace.port, namespace.tango)
+    return run_gateway_server(namespace.bind,
+                              namespace.port,
+                              namespace.tango,
+                              namespace.verbose)
 
 
 if __name__ == '__main__':

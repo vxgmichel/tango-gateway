@@ -63,7 +63,7 @@ def get_connection(key, loop, only_check=False):
         reader, writer = yield from asyncio.open_connection(
             host, port, loop=loop)
     # Connection broken
-    except ConnectionRefusedError:
+    except (ConnectionRefusedError, OSError):
         print("Could not connect to {} port {}".format(host, port))
         yield from stop_forwarding(key, loop)
         return False
@@ -331,7 +331,7 @@ def check_zmq(raw_body, bind_address, loop):
 
 # Run server
 
-def run_gateway_server(bind_address, server_port, tango_host):
+def run_gateway_server(bind_address, server_port, tango_host, debug=False):
     """Run a Tango gateway server."""
     # Initialize loop
     loop = asyncio.get_event_loop()
@@ -339,7 +339,6 @@ def run_gateway_server(bind_address, server_port, tango_host):
     loop.server_port = server_port
     loop.tango_host = tango_host
     loop.forward_dict = {}
-    # Create locked
     loop.bound_socket = socket.socket()
     loop.bound_socket.bind((bind_address, 0))
     loop.bound_port = loop.bound_socket.getsockname()[1]

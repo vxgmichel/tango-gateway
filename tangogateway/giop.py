@@ -216,18 +216,20 @@ def repack_csd(body, csd, start):
 # ZMQ Helpers
 
 def find_zmq_endpoints(body):
-    if body.count(ZMQ_TOKEN, -200) != 2:
+    if body.count(ZMQ_TOKEN) < 2:
         return False
-    index = body.find(ZMQ_TOKEN, 4)
-    sub_body = body[index-4:]
-    l1 = struct.unpack_from('I', sub_body)[-1]
-    try:
-        l2 = struct.unpack_from('I{:d}sI'.format(l1), sub_body)[-1]
-        form = ZMQ_STRUCT.format(l1, l2)
-        l1, s1, l2, s2 = struct.unpack(form, sub_body)
-    except ValueError:
-        return False
-    return s1, s2, index-4
+    strings = []
+    pattern = 'I'
+    index = body.find(ZMQ_TOKEN, 4) - 8
+    sub_body = body[index:]
+    length, = struct.unpack_from(pattern, sub_body)
+    for i in range(length):
+        pattern += 'I'
+        size = struct.unpack_from(pattern, sub_body)[-1]
+        pattern += '{:d}s'.format(size)
+        string = struct.unpack_from(pattern, sub_body)[-1]
+        strings.append(string)
+    return strings, index
 
 
 def decode_zmq_endpoint(encoded):
@@ -241,8 +243,9 @@ def encode_zmq_endpoint(host, port):
     return ZMQ_TOKEN + encoded + STRING_TERM
 
 
-def repack_zmq_endpoints(body, zmq1, zmq2, start):
-    l1, l2 = len(zmq1), len(zmq2)
-    form = ZMQ_STRUCT.format(l1, l2)
-    string = struct.pack(form, l1, zmq1, l2, zmq2)
+def repack_zmq_endpoints(body, zmqs, start):
+    form = 'I' + 'I{:d}s' * len(zmqs)
+    pattern = form.format(*map(len, zmqs))
+    values = [x for zmq in zmqs for x in (len(zmq), zmq)]
+    string = struct.pack(pattern, len(zmqs), *values)
     return body[:start] + string

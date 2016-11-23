@@ -309,13 +309,13 @@ def handle_ds_client(reader, writer, key):
 @asyncio.coroutine
 def check_zmq(raw_body, bind_address, loop):
     # Find zmq token
-    zmq = giop.find_zmq_endpoints(raw_body)
-    if not zmq:
+    result = giop.find_zmq_endpoints(raw_body)
+    if not result:
         return False
     # Exctract endpoints
     new_endpoints = []
-    zmq1, zmq2, start = zmq
-    for zmq in (zmq1, zmq2):
+    zmqs, start = result
+    for zmq in zmqs:
         host, port = giop.decode_zmq_endpoint(zmq)
         key = host, port, bind_address
         # Start port forwarding
@@ -325,8 +325,7 @@ def check_zmq(raw_body, bind_address, loop):
         endpoint = giop.encode_zmq_endpoint(bind_address, server_port)
         new_endpoints.append(endpoint)
     # Repack body
-    zmq1, zmq2 = new_endpoints
-    return giop.repack_zmq_endpoints(raw_body, zmq1, zmq2, start)
+    return giop.repack_zmq_endpoints(raw_body, new_endpoints, start)
 
 
 # Run server

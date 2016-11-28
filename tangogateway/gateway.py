@@ -312,18 +312,22 @@ def check_zmq(raw_body, bind_address, loop):
     result = giop.find_zmq_endpoints(raw_body)
     if not result:
         return False
+    # Filter endpoints
+    endpoints, start = result
+    nb = len(endpoints)
+    if nb > 2:
+        print('Discarding {}/{} endpoints'.format(nb-2, nb))
+        endpoints = endpoints[:2]
     # Exctract endpoints
     new_endpoints = []
-    zmqs, start = result
-    for zmq in zmqs:
-        host, port = giop.decode_zmq_endpoint(zmq)
-        key = host, port, bind_address
+    for endpoint in endpoints:
+        host, port = giop.decode_zmq_endpoint(endpoint)
         # Start port forwarding
-        server, _, server_port = yield from get_forwarding(
+        _, _, server_port = yield from get_forwarding(
             host, port, HandlerType.ZMQ, bind_address, loop=loop)
         # Make new endpoints
-        endpoint = giop.encode_zmq_endpoint(bind_address, server_port)
-        new_endpoints.append(endpoint)
+        new_endpoint = giop.encode_zmq_endpoint(bind_address, server_port)
+        new_endpoints.append(new_endpoint)
     # Repack body
     return giop.repack_zmq_endpoints(raw_body, new_endpoints, start)
 

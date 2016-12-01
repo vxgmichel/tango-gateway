@@ -21,6 +21,7 @@ ZMQ_TOKEN = b'tcp://'
 STRING_TERM = b'\x00'
 DEVVARSTRINGARRAY_TOKEN = b'DevVarStringArray\x00'
 CSD_OFFSET = 48
+IMPORT_DEVICE_ARGOUTS = 6
 
 
 # Enumerations
@@ -141,6 +142,20 @@ def valid_ior(string):
     if len(string) < MIN_IOR_LENGTH or not string.startswith(MAGIC_IOR):
         return False
     return not set(string[4:]) - HEXA_DIGIT_SET
+
+
+def find_device_name(body, ior_start):
+    # Find the the end of the device name lenght frame
+    start = body.rfind(b"\x00\x00", None, ior_start)
+    # Shift to the previous frame (argouts count of IMPORT_DEVICE command)
+    start = start - 6
+    argout_size, device_name_len = struct.unpack_from("II", body, start)
+    if not argout_size == IMPORT_DEVICE_ARGOUTS:
+        raise ValueError("Not a valid body")
+    frame_struct = "II{}s".format(device_name_len)
+    _, _, device_name = struct.unpack_from(frame_struct, body, start)
+    # Remove last \x00
+    return device_name[:-1].decode()
 
 
 def find_ior(body, index=4):

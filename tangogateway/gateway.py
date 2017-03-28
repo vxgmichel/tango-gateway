@@ -80,7 +80,8 @@ def get_connection(key, loop, only_check=False):
     # Connection broken
     except (ConnectionRefusedError, OSError):
         logger.warn("Could not connect to {} port {}".format(host, port))
-        yield from stop_forwarding(key, loop)
+        if key != loop.db_key:
+            yield from stop_forwarding(key, loop)
         return False
     # Connection OK
     if not only_check:
@@ -114,15 +115,18 @@ def get_forwarding(host, port, handler_type,
                    bind_address='0.0.0.0', server_port=0, loop=None):
     if loop is None:
         loop = asyncio.get_event_loop()
-    # Check connection
-    key = host, port, bind_address
-    if not (yield from get_connection(key, loop, only_check=True)):
-        return None, bind_address, loop.bound_port
     # Check cache
+    key = host, port, bind_address
     if key in loop.forward_dict:
         return (yield from loop.forward_dict[key])
-    loop.forward_dict[key] = asyncio.Future(loop=loop)
+    # No connection check for DB
+    if handler_type == HandlerType.DB:
+        loop.db_key = key
+    # Connection check
+    elif not (yield from get_connection(key, loop, only_check=True)):
+        return None, bind_address, loop.bound_port
     # Start forwarding
+    loop.forward_dict[key] = asyncio.Future(loop=loop)
     value = yield from start_forwarding(
         host, port, handler_type, bind_address, server_port, loop)
     # Set cache
@@ -372,9 +376,8 @@ def run_gateway_server(bind_address, server_port, tango_host, debug=False):
     loop.bound_port = loop.bound_socket.getsockname()[1]
     # Create server
     host, port = tango_host
-    coro = get_forwarding(
-        host, port, HandlerType.DB, bind_address, server_port, loop=loop)
-    server, _, _ = loop.run_until_complete(coro)
+    loop.run_until_complete(get_forwarding(
+        host, port, HandlerType.DB, bind_address, server_port, loop=loop))
     # Serve requests until Ctrl+C is pressed
     try:
         check_task = loop.create_task(check_servers(loop))
@@ -385,7 +388,6 @@ def run_gateway_server(bind_address, server_port, tango_host, debug=False):
     servers = [fut.result()[0]
                for fut in loop.forward_dict.values()
                if fut.done() and not fut.exception()]
-    servers.append(server)
     for server in servers:
         server.close()
     # Wait for the servers to close
